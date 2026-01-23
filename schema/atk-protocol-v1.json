@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/spinoza/atk/schema/atk-protocol-v1.json",
+  "title": "ATK Protocol v1",
+  "description": "JSON Lines protocol for ATK audio daemon IPC",
+
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["v", "id", "cmd"],
+      "properties": {
+        "v": {
+          "type": "integer",
+          "const": 1,
+          "description": "Protocol version"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Request ID for correlation"
+        },
+        "cmd": {
+          "type": "string",
+          "description": "Command name"
+        },
+        "args": {
+          "type": "object",
+          "description": "Command arguments"
+        }
+      }
+    },
+
+    "response_success": {
+      "type": "object",
+      "required": ["v", "id", "ok", "data"],
+      "properties": {
+        "v": { "type": "integer", "const": 1 },
+        "id": { "type": "string" },
+        "ok": { "const": true },
+        "data": { "type": "object" }
+      }
+    },
+
+    "response_error": {
+      "type": "object",
+      "required": ["v", "id", "ok", "error"],
+      "properties": {
+        "v": { "type": "integer", "const": 1 },
+        "id": { "type": "string" },
+        "ok": { "const": false },
+        "error": { "$ref": "#/$defs/error_info" }
+      }
+    },
+
+    "error_info": {
+      "type": "object",
+      "required": ["code", "category", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "FILE_NOT_FOUND",
+            "PERMISSION_DENIED",
+            "READ_ERROR",
+            "SESSION_NOT_FOUND",
+            "SESSION_EXISTS",
+            "INVALID_FORMAT",
+            "DECODE_ERROR",
+            "STREAM_ERROR",
+            "INVALID_MESSAGE",
+            "UNKNOWN_COMMAND",
+            "INVALID_ARGS",
+            "QUEUE_EMPTY",
+            "INVALID_INDEX"
+          ]
+        },
+        "category": {
+          "type": "string",
+          "enum": ["io", "session", "playback", "protocol", "queue", "internal"]
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+
+    "event": {
+      "type": "object",
+      "required": ["v", "event", "data"],
+      "properties": {
+        "v": { "type": "integer", "const": 1 },
+        "event": {
+          "type": "string",
+          "enum": [
+            "track_changed",
+            "playback_started",
+            "playback_paused",
+            "playback_stopped",
+            "queue_updated",
+            "position_update",
+            "queue_finished",
+            "error"
+          ]
+        },
+        "data": { "type": "object" }
+      }
+    },
+
+    "track_info": {
+      "type": "object",
+      "required": ["uri"],
+      "properties": {
+        "uri": { "type": "string" },
+        "title": { "type": ["string", "null"] },
+        "artist": { "type": ["string", "null"] },
+        "album": { "type": ["string", "null"] },
+        "duration": { "type": ["number", "null"] }
+      }
+    },
+
+    "session_info": {
+      "type": "object",
+      "required": ["name", "state"],
+      "properties": {
+        "name": { "type": "string" },
+        "state": {
+          "type": "string",
+          "enum": ["playing", "paused", "stopped"]
+        },
+        "track": {
+          "oneOf": [
+            { "$ref": "#/$defs/track_info" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+
+    "status_info": {
+      "type": "object",
+      "required": ["state", "position", "duration", "volume", "shuffle", "repeat", "queue_length", "queue_position"],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["playing", "paused", "stopped"]
+        },
+        "track": {
+          "oneOf": [
+            { "$ref": "#/$defs/track_info" },
+            { "type": "null" }
+          ]
+        },
+        "position": { "type": "number", "minimum": 0 },
+        "duration": { "type": "number", "minimum": 0 },
+        "volume": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "shuffle": { "type": "boolean" },
+        "repeat": {
+          "type": "string",
+          "enum": ["none", "queue", "track"]
+        },
+        "queue_length": { "type": "integer", "minimum": 0 },
+        "queue_position": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "queue_info": {
+      "type": "object",
+      "required": ["tracks", "current_index"],
+      "properties": {
+        "tracks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/track_info" }
+        },
+        "current_index": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response_success" },
+    { "$ref": "#/$defs/response_error" },
+    { "$ref": "#/$defs/event" }
+  ]
+}
