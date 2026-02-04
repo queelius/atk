@@ -1,22 +1,22 @@
 """ATK Protocol - JSON Lines IPC protocol for audio control."""
 
+from .client import PipeClient
 from .messages import (
     PROTOCOL_VERSION,
+    ErrorCode,
+    ErrorInfo,
+    Event,
+    EventType,
+    PlaylistInfo,
+    QueueInfo,
+    RepeatMode,
     Request,
     Response,
-    Event,
-    ErrorInfo,
-    ErrorCode,
-    EventType,
-    RepeatMode,
-    TrackInfo,
-    SessionInfo,
-    QueueInfo,
     StatusInfo,
+    TrackInfo,
     parse_message,
     serialize_message,
 )
-from .client import PipeClient
 
 __all__ = [
     "PROTOCOL_VERSION",
@@ -28,9 +28,9 @@ __all__ = [
     "EventType",
     "RepeatMode",
     "TrackInfo",
-    "SessionInfo",
     "QueueInfo",
     "StatusInfo",
+    "PlaylistInfo",
     "parse_message",
     "serialize_message",
     "PipeClient",

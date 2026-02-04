@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import MagicMock, patch, AsyncMock
-
 import pytest
 
-from atk.daemon.session import Session, PlaybackState
-from atk.protocol.messages import RepeatMode, Event, EventType
+from atk.daemon.session import PlaybackState, Session
+from atk.protocol.messages import Event, EventType, RepeatMode
 
 
 class TestSessionBasic:
@@ -31,12 +28,7 @@ class TestSessionBasic:
         assert session.repeat == RepeatMode.NONE
         assert session.queue_position == 0
         assert session.position == 0.0
-        # DSP defaults
         assert session.rate == 1.0
-        assert session.pitch == 0.0
-        assert session.bass == 0.0
-        assert session.treble == 0.0
-        assert session.loop_enabled is False
 
 
 class TestSessionQueue:
@@ -424,182 +416,105 @@ class TestSessionRate:
         assert result["rate"] == 0.25
 
 
-class TestSessionPitch:
-    """Pitch shift tests."""
+class TestSessionJump:
+    """Jump command tests."""
 
     @pytest.mark.asyncio
-    async def test_set_pitch(self, mock_miniaudio):
-        """Test setting pitch shift."""
+    async def test_jump_to_track(self, mock_miniaudio, sample_audio_file):
+        """Test jumping to a specific track."""
         session = Session(name="test")
-        result = await session.cmd_pitch(5.0)
+        await session.cmd_add(str(sample_audio_file))
+        await session.cmd_add(str(sample_audio_file))
+        await session.cmd_add(str(sample_audio_file))
 
-        assert result["pitch"] == 5.0
-        assert session.pitch == 5.0
+        result = await session.cmd_jump(2)
+
+        assert result["queue_position"] == 2
+        assert session.queue_position == 2
 
     @pytest.mark.asyncio
-    async def test_pitch_clamp_max(self, mock_miniaudio):
-        """Test pitch is clamped to max."""
+    async def test_jump_invalid_index(self, mock_miniaudio, sample_audio_file):
+        """Test jumping to invalid index raises error."""
         session = Session(name="test")
-        result = await session.cmd_pitch(15.0)
+        await session.cmd_add(str(sample_audio_file))
 
-        assert result["pitch"] == 12.0
+        with pytest.raises(IndexError):
+            await session.cmd_jump(5)
+
+
+class TestSessionShuffleRaceCondition:
+    """Test shuffle race condition bug fix (6.1)."""
 
     @pytest.mark.asyncio
-    async def test_pitch_clamp_min(self, mock_miniaudio):
-        """Test pitch is clamped to min."""
+    async def test_shuffle_with_missing_position(
+        self, mock_miniaudio, sample_audio_file
+    ):
+        """Test shuffle doesn't crash when position is not in shuffle_order."""
         session = Session(name="test")
-        result = await session.cmd_pitch(-15.0)
+        await session.cmd_add(str(sample_audio_file))
+        await session.cmd_add(str(sample_audio_file))
+        await session.cmd_add(str(sample_audio_file))
 
-        assert result["pitch"] == -12.0
+        session.shuffle = True
+        session.shuffle_order = [0, 2]  # Missing 1
+        session.queue_position = 1  # Position not in shuffle_order
 
+        # Should not raise ValueError, should fallback to linear
+        result = session._advance_queue()
 
-class TestSessionEQ:
-    """EQ (bass/treble) tests."""
+        # Should still advance (fallback to linear)
+        assert result is True
 
     @pytest.mark.asyncio
-    async def test_set_bass(self, mock_miniaudio):
-        """Test setting bass EQ."""
+    async def test_previous_with_missing_position(
+        self, mock_miniaudio, sample_audio_file
+    ):
+        """Test previous doesn't crash when position is not in shuffle_order."""
         session = Session(name="test")
-        result = await session.cmd_bass(6.0)
+        await session.cmd_add(str(sample_audio_file))
+        await session.cmd_add(str(sample_audio_file))
+        await session.cmd_add(str(sample_audio_file))
 
-        assert result["bass"] == 6.0
-        assert session.bass == 6.0
+        session.shuffle = True
+        session.shuffle_order = [0, 2]  # Missing 1
+        session.queue_position = 1  # Position not in shuffle_order
 
-    @pytest.mark.asyncio
-    async def test_set_treble(self, mock_miniaudio):
-        """Test setting treble EQ."""
-        session = Session(name="test")
-        result = await session.cmd_treble(-3.0)
+        # Should not raise ValueError, should fallback to linear
+        result = session._go_previous()
 
-        assert result["treble"] == -3.0
-        assert session.treble == -3.0
+        # Should still go previous (fallback to linear)
+        assert result is True
 
-    @pytest.mark.asyncio
-    async def test_bass_clamp(self, mock_miniaudio):
-        """Test bass is clamped to range."""
-        session = Session(name="test")
-        result = await session.cmd_bass(20.0)
-        assert result["bass"] == 12.0
 
-        result = await session.cmd_bass(-20.0)
-        assert result["bass"] == -12.0
+class TestSessionStatusWithRate:
+    """Status tests including rate parameter."""
 
     @pytest.mark.asyncio
-    async def test_treble_clamp(self, mock_miniaudio):
-        """Test treble is clamped to range."""
-        session = Session(name="test")
-        result = await session.cmd_treble(20.0)
-        assert result["treble"] == 12.0
-
-        result = await session.cmd_treble(-20.0)
-        assert result["treble"] == -12.0
-
-
-class TestSessionFade:
-    """Fade tests."""
-
-    @pytest.mark.asyncio
-    async def test_fade(self, mock_miniaudio):
-        """Test starting a fade."""
-        session = Session(name="test")
-        result = await session.cmd_fade(0, 3.0)
-
-        assert result["fading_to"] == 0
-        assert result["duration"] == 3.0
-
-
-class TestSessionLoop:
-    """A/B loop tests."""
-
-    @pytest.mark.asyncio
-    async def test_set_loop_points(self, mock_miniaudio):
-        """Test setting A/B loop points."""
-        session = Session(name="test")
-        result = await session.cmd_loop(a=10.0, b=30.0)
-
-        assert result["loop_a"] == 10.0
-        assert result["loop_b"] == 30.0
-        assert result["loop_enabled"] is True
-        assert session.loop_a == 10.0
-        assert session.loop_b == 30.0
-        assert session.loop_enabled is True
-
-    @pytest.mark.asyncio
-    async def test_disable_loop(self, mock_miniaudio):
-        """Test disabling loop."""
-        session = Session(name="test")
-        session.loop_a = 10.0
-        session.loop_b = 30.0
-        session.loop_enabled = True
-
-        result = await session.cmd_loop(enabled=False)
-
-        assert result["loop_enabled"] is False
-        assert session.loop_enabled is False
-
-    @pytest.mark.asyncio
-    async def test_enable_loop(self, mock_miniaudio):
-        """Test enabling loop."""
-        session = Session(name="test")
-        session.loop_a = 10.0
-        session.loop_b = 30.0
-
-        result = await session.cmd_loop(enabled=True)
-
-        assert result["loop_enabled"] is True
-
-
-class TestSessionStatusWithDSP:
-    """Status tests including DSP parameters."""
-
-    @pytest.mark.asyncio
-    async def test_status_includes_dsp(self, mock_miniaudio, sample_audio_file):
-        """Test status includes DSP parameters."""
+    async def test_status_includes_rate(self, mock_miniaudio, sample_audio_file):
+        """Test status includes rate parameter."""
         session = Session(name="test")
         await session.cmd_play(str(sample_audio_file))
         await session.cmd_rate(1.5)
-        await session.cmd_pitch(2.0)
-        await session.cmd_bass(3.0)
-        await session.cmd_treble(-2.0)
-        await session.cmd_loop(a=10.0, b=30.0)
 
         result = await session.cmd_status()
 
         assert result["rate"] == 1.5
-        assert result["pitch"] == 2.0
-        assert result["bass"] == 3.0
-        assert result["treble"] == -2.0
-        assert result["loop_a"] == 10.0
-        assert result["loop_b"] == 30.0
-        assert result["loop_enabled"] is True
 
 
-class TestSessionPersistenceWithDSP:
-    """Persistence tests including DSP parameters."""
+class TestSessionPersistenceWithRate:
+    """Persistence tests including rate parameter."""
 
-    def test_to_dict_includes_dsp(self, mock_miniaudio):
-        """Test serialization includes DSP parameters."""
+    def test_to_dict_includes_rate(self, mock_miniaudio):
+        """Test serialization includes rate parameter."""
         session = Session(name="test")
         session.rate = 1.5
-        session.pitch = 2.0
-        session.bass = 3.0
-        session.treble = -2.0
-        session.loop_a = 10.0
-        session.loop_b = 30.0
-        session.loop_enabled = True
 
         data = session.to_dict()
 
         assert data["rate"] == 1.5
-        assert data["pitch"] == 2.0
-        assert data["bass"] == 3.0
-        assert data["treble"] == -2.0
-        assert data["loop_a"] == 10.0
-        assert data["loop_b"] == 30.0
-        assert data["loop_enabled"] is True
 
-    def test_from_dict_restores_dsp(self, mock_miniaudio):
-        """Test deserialization restores DSP parameters."""
+    def test_from_dict_restores_rate(self, mock_miniaudio):
+        """Test deserialization restores rate parameter."""
         data = {
             "name": "restored",
             "queue": [],
@@ -610,20 +525,8 @@ class TestSessionPersistenceWithDSP:
             "repeat": "none",
             "volume": 80,
             "rate": 1.5,
-            "pitch": 2.0,
-            "bass": 3.0,
-            "treble": -2.0,
-            "loop_a": 10.0,
-            "loop_b": 30.0,
-            "loop_enabled": True,
         }
 
         session = Session.from_dict(data)
 
         assert session.rate == 1.5
-        assert session.pitch == 2.0
-        assert session.bass == 3.0
-        assert session.treble == -2.0
-        assert session.loop_a == 10.0
-        assert session.loop_b == 30.0
-        assert session.loop_enabled is True

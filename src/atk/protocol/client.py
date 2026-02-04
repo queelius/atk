@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-import json
 from pathlib import Path
 from typing import AsyncIterator, Callable
 
-from .messages import Request, Response, Event, parse_message
+from .messages import Event, Request, Response, parse_message
 
 
 def get_runtime_dir() -> Path:
@@ -35,21 +34,12 @@ class PipeClient:
         self._running = False
 
     @classmethod
-    def for_registry(cls) -> PipeClient:
-        """Create client for the registry."""
+    def for_daemon(cls) -> PipeClient:
+        """Create client for the daemon."""
         runtime = get_runtime_dir()
         return cls(
-            cmd_pipe=runtime / "registry.cmd",
-            resp_pipe=runtime / "registry.resp",
-        )
-
-    @classmethod
-    def for_session(cls, name: str) -> PipeClient:
-        """Create client for a specific session."""
-        runtime = get_runtime_dir()
-        return cls(
-            cmd_pipe=runtime / "sessions" / f"{name}.cmd",
-            resp_pipe=runtime / "sessions" / f"{name}.resp",
+            cmd_pipe=runtime / "atk.cmd",
+            resp_pipe=runtime / "atk.resp",
         )
 
     def add_event_handler(self, handler: Callable[[Event], None]) -> None:
@@ -110,7 +100,9 @@ class PipeClient:
             except Exception:
                 await asyncio.sleep(0.1)
 
-    async def send(self, cmd: str, args: dict | None = None, timeout: float = 5.0) -> Response:
+    async def send(
+        self, cmd: str, args: dict | None = None, timeout: float = 5.0
+    ) -> Response:
         """Send a command and wait for response."""
         request = Request(cmd=cmd, args=args or {})
 
@@ -135,7 +127,9 @@ class PipeClient:
             del self._pending[request.id]
             raise
 
-    def send_sync(self, cmd: str, args: dict | None = None, timeout: float = 5.0) -> Response:
+    def send_sync(
+        self, cmd: str, args: dict | None = None, timeout: float = 5.0
+    ) -> Response:
         """Synchronous send for CLI use."""
         request = Request(cmd=cmd, args=args or {})
 
@@ -204,8 +198,8 @@ class PipeClient:
 
 
 def is_daemon_running() -> bool:
-    """Check if the daemon is running by testing registry pipe."""
+    """Check if the daemon is running by testing pipe existence."""
     runtime = get_runtime_dir()
-    cmd_pipe = runtime / "registry.cmd"
-    resp_pipe = runtime / "registry.resp"
+    cmd_pipe = runtime / "atk.cmd"
+    resp_pipe = runtime / "atk.resp"
     return cmd_pipe.exists() and resp_pipe.exists()

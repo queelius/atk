@@ -3,25 +3,22 @@
 from __future__ import annotations
 
 import json
-import uuid
 
 import pytest
 
 from atk.protocol.messages import (
     PROTOCOL_VERSION,
+    ErrorCode,
+    ErrorInfo,
+    Event,
+    EventType,
+    PlaylistInfo,
+    RepeatMode,
     Request,
     Response,
-    Event,
-    ErrorInfo,
-    ErrorCode,
-    EventType,
-    RepeatMode,
-    TrackInfo,
-    SessionInfo,
     StatusInfo,
-    QueueInfo,
+    TrackInfo,
     parse_message,
-    serialize_message,
 )
 
 
@@ -226,6 +223,45 @@ class TestStatusInfo:
         assert data["state"] == "paused"
         assert data["repeat"] == "none"
         assert data["track"] is None
+
+    def test_status_info_with_rate(self):
+        """Test status info with rate parameter."""
+        status = StatusInfo(
+            state="playing",
+            track=None,
+            position=0.0,
+            duration=0.0,
+            volume=80,
+            shuffle=False,
+            repeat=RepeatMode.NONE,
+            queue_length=0,
+            queue_position=0,
+            rate=1.5,
+        )
+        data = status.to_dict()
+
+        assert data["rate"] == 1.5
+
+
+class TestPlaylistInfo:
+    """Tests for PlaylistInfo."""
+
+    def test_playlist_info(self):
+        """Test playlist info creation."""
+        pl = PlaylistInfo(name="favorites", track_count=10, format="json")
+
+        assert pl.name == "favorites"
+        assert pl.track_count == 10
+        assert pl.format == "json"
+
+    def test_playlist_info_to_dict(self):
+        """Test playlist info serialization."""
+        pl = PlaylistInfo(name="test", track_count=5)
+        data = pl.to_dict()
+
+        assert data["name"] == "test"
+        assert data["track_count"] == 5
+        assert data["format"] == "json"  # default
 
 
 class TestParseMessage:

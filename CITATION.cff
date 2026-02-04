@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+type: software
+title: atk
+version: 0.1.0
+abstract: Non-blocking audio playback daemon with named pipe protocol
+license: MIT
+date-released: '2026-02-04'
+repository-code: https://github.com/queelius/atk
+authors:
+- family-names: Towell
+  given-names: Alex
+  email: lex@metafunctor.com
+  orcid: https://orcid.org/0000-0001-6443-9897

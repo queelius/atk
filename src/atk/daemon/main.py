@@ -7,21 +7,20 @@ import logging
 import os
 import signal
 import sys
-from pathlib import Path
 
-from ..config import load_config, get_effective_runtime_dir, get_effective_state_dir
-from .registry import Registry
+from ..config import get_effective_runtime_dir, get_effective_state_dir, load_config
+from .daemon import Daemon
 from .player import Player
 
 
-class Daemon:
+class DaemonRunner:
     """Main ATK daemon process."""
 
     def __init__(self):
         self.config = load_config()
         self.runtime_dir = get_effective_runtime_dir(self.config)
         self.state_dir = get_effective_state_dir(self.config)
-        self.registry: Registry | None = None
+        self.daemon: Daemon | None = None
         self._shutdown_event = asyncio.Event()
         self._logger = logging.getLogger("atk.daemon")
 
@@ -83,9 +82,9 @@ class Daemon:
         pid_file = self.runtime_dir / "daemon.pid"
         pid_file.write_text(str(os.getpid()))
 
-        # Start registry
-        self.registry = Registry(self.runtime_dir)
-        await self.registry.start()
+        # Start daemon
+        self.daemon = Daemon(self.runtime_dir)
+        await self.daemon.start()
 
         self._logger.info("ATK daemon started successfully")
 
@@ -93,15 +92,15 @@ class Daemon:
         """Stop the daemon."""
         self._logger.info("Stopping ATK daemon")
 
-        if self.registry:
-            await self.registry.stop()
+        if self.daemon:
+            await self.daemon.stop()
 
         # Clean up PID file
         pid_file = self.runtime_dir / "daemon.pid"
         if pid_file.exists():
             pid_file.unlink()
 
-        # Shutdown pygame
+        # Shutdown player
         Player.shutdown()
 
         self._logger.info("ATK daemon stopped")
@@ -109,7 +108,7 @@ class Daemon:
     def _is_already_running(self) -> bool:
         """Check if another daemon is running."""
         pid_file = self.runtime_dir / "daemon.pid"
-        cmd_pipe = self.runtime_dir / "registry.cmd"
+        cmd_pipe = self.runtime_dir / "atk.cmd"
 
         if not pid_file.exists():
             return False
@@ -125,7 +124,7 @@ class Daemon:
                 pid_file.unlink()
             if cmd_pipe.exists():
                 cmd_pipe.unlink()
-            resp_pipe = self.runtime_dir / "registry.resp"
+            resp_pipe = self.runtime_dir / "atk.resp"
             if resp_pipe.exists():
                 resp_pipe.unlink()
             return False
@@ -143,8 +142,8 @@ class Daemon:
 
 async def async_main() -> None:
     """Async entry point."""
-    daemon = Daemon()
-    await daemon.run()
+    runner = DaemonRunner()
+    await runner.run()
 
 
 def main() -> None:

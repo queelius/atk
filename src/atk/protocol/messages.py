@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
-
 
 PROTOCOL_VERSION = 1
 
@@ -19,10 +18,6 @@ class ErrorCode(str, Enum):
     FILE_NOT_FOUND = "FILE_NOT_FOUND"
     PERMISSION_DENIED = "PERMISSION_DENIED"
     READ_ERROR = "READ_ERROR"
-
-    # Session errors
-    SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
-    SESSION_EXISTS = "SESSION_EXISTS"
 
     # Playback errors
     INVALID_FORMAT = "INVALID_FORMAT"
@@ -37,6 +32,9 @@ class ErrorCode(str, Enum):
     # Queue errors
     QUEUE_EMPTY = "QUEUE_EMPTY"
     INVALID_INDEX = "INVALID_INDEX"
+
+    # Playlist errors
+    PLAYLIST_NOT_FOUND = "PLAYLIST_NOT_FOUND"
 
 
 class EventType(str, Enum):
@@ -78,7 +76,9 @@ class ErrorInfo:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ErrorInfo:
         return cls(
-            code=ErrorCode(data["code"]) if data["code"] in [e.value for e in ErrorCode] else data["code"],
+            code=ErrorCode(data["code"])
+            if data["code"] in [e.value for e in ErrorCode]
+            else data["code"],
             category=data["category"],
             message=data["message"],
         )
@@ -100,30 +100,6 @@ class TrackInfo:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TrackInfo:
         return cls(**data)
-
-
-@dataclass
-class SessionInfo:
-    """Session summary for registry list."""
-
-    name: str
-    state: str  # "playing", "paused", "stopped"
-    track: TrackInfo | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "state": self.state,
-            "track": self.track.to_dict() if self.track else None,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SessionInfo:
-        return cls(
-            name=data["name"],
-            state=data["state"],
-            track=TrackInfo.from_dict(data["track"]) if data.get("track") else None,
-        )
 
 
 @dataclass
@@ -160,14 +136,7 @@ class StatusInfo:
     repeat: RepeatMode
     queue_length: int
     queue_position: int
-    # DSP parameters
     rate: float = 1.0
-    pitch: float = 0.0
-    bass: float = 0.0
-    treble: float = 0.0
-    loop_a: float | None = None
-    loop_b: float | None = None
-    loop_enabled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,12 +150,6 @@ class StatusInfo:
             "queue_length": self.queue_length,
             "queue_position": self.queue_position,
             "rate": self.rate,
-            "pitch": self.pitch,
-            "bass": self.bass,
-            "treble": self.treble,
-            "loop_a": self.loop_a,
-            "loop_b": self.loop_b,
-            "loop_enabled": self.loop_enabled,
         }
 
     @classmethod
@@ -202,13 +165,27 @@ class StatusInfo:
             queue_length=data["queue_length"],
             queue_position=data["queue_position"],
             rate=data.get("rate", 1.0),
-            pitch=data.get("pitch", 0.0),
-            bass=data.get("bass", 0.0),
-            treble=data.get("treble", 0.0),
-            loop_a=data.get("loop_a"),
-            loop_b=data.get("loop_b"),
-            loop_enabled=data.get("loop_enabled", False),
         )
+
+
+@dataclass
+class PlaylistInfo:
+    """Playlist metadata."""
+
+    name: str
+    track_count: int
+    format: str = "json"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "track_count": self.track_count,
+            "format": self.format,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PlaylistInfo:
+        return cls(**data)
 
 
 @dataclass

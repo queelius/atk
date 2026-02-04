@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Static, ProgressBar, Label
 from textual.reactive import reactive
+from textual.widgets import ProgressBar, Static
 
 
 def format_time(seconds: float) -> str:
@@ -108,9 +108,9 @@ class ProgressDisplay(Static):
         self._update_display()
 
     def _update_display(self) -> None:
-        progress = 0
+        progress: float = 0
         if self.duration > 0:
-            progress = min(100, (self.position / self.duration) * 100)
+            progress = min(100.0, (self.position / self.duration) * 100)
 
         bar = self.query_one("#progress-bar", ProgressBar)
         bar.progress = progress
@@ -173,7 +173,9 @@ class QueuePreview(Static):
 
         if len(tracks) > end:
             remaining = len(tracks) - end
-            queue_list.mount(Static(f"  ... and {remaining} more", classes="queue-item"))
+            queue_list.mount(
+                Static(f"  ... and {remaining} more", classes="queue-item")
+            )
 
 
 class StatusBar(Static):
@@ -267,5 +269,6 @@ class HelpBar(Static):
 
     def compose(self) -> ComposeResult:
         yield Static(
-            "[Space] Play/Pause  [←/→] Seek  [↑/↓] Volume  [n/p] Track  [s] Shuffle  [r] Repeat  [q] Quit"
+            "[Space] Play/Pause  [←/→] Seek  [↑/↓] Vol"
+            "  [n/p] Track  [s] Shuffle  [r] Repeat  [q] Quit"
         )

@@ -9,15 +9,22 @@ description = "Non-blocking audio playback daemon with named pipe protocol"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "spinoza" }
+    { name = "Alexander Towell", email = "lex@metafunctor.com" }
+]
+keywords = ["audio", "daemon", "cli", "music-player", "miniaudio", "ipc", "unix"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
 dependencies = [
     "miniaudio>=1.60",
     "numpy>=1.24",
-    "scipy>=1.10",
     "textual>=0.40",
     "click>=8.0",
-    "jsonschema>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -25,11 +32,14 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.0",
 ]
-# Optional librosa for independent rate/pitch control (without it, rate affects pitch)
-audio = [
-    "librosa>=0.10",
-]
+
+[project.urls]
+Homepage = "https://github.com/queelius/atk"
+Repository = "https://github.com/queelius/atk"
+Issues = "https://github.com/queelius/atk/issues"
 
 [project.scripts]
 atk = "atk.cli.main:main"
@@ -38,6 +48,16 @@ atk-daemon = "atk.daemon.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/atk"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

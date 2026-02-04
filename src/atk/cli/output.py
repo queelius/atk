@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any
+from collections.abc import Callable
 
-from ..protocol.messages import Response, Event
+from ..protocol.messages import Event, Response
 
 
 def format_time(seconds: float) -> str:
@@ -80,28 +80,10 @@ def format_status(data: dict) -> str:
 
     lines.append(f"  Volume: {volume}%  {shuffle} {repeat_icon}")
 
-    # DSP settings (only show if non-default)
-    dsp_parts = []
+    # Rate (only show if non-default)
     rate = data.get("rate", 1.0)
     if rate != 1.0:
-        dsp_parts.append(f"Rate: {rate:.2f}x")
-    pitch = data.get("pitch", 0.0)
-    if pitch != 0.0:
-        dsp_parts.append(f"Pitch: {pitch:+.1f}st")
-    bass = data.get("bass", 0.0)
-    treble = data.get("treble", 0.0)
-    if bass != 0.0 or treble != 0.0:
-        dsp_parts.append(f"EQ: Bass {bass:+.0f}dB / Treble {treble:+.0f}dB")
-    if dsp_parts:
-        lines.append(f"  {' | '.join(dsp_parts)}")
-
-    # Loop info
-    loop_a = data.get("loop_a")
-    loop_b = data.get("loop_b")
-    loop_enabled = data.get("loop_enabled", False)
-    if loop_a is not None and loop_b is not None:
-        loop_status = "🔁" if loop_enabled else "off"
-        lines.append(f"  Loop: {format_time(loop_a)} - {format_time(loop_b)} [{loop_status}]")
+        lines.append(f"  Rate: {rate:.2f}x")
 
     # Queue info
     queue_len = data.get("queue_length", 0)
@@ -129,23 +111,41 @@ def format_queue(data: dict) -> str:
     return "\n".join(lines)
 
 
-def format_sessions(data: dict) -> str:
-    """Format session list for display."""
-    sessions = data.get("sessions", [])
+def format_playlists(data: dict) -> str:
+    """Format playlists response for display."""
+    playlists = data.get("playlists", [])
 
-    if not sessions:
-        return "(no active sessions)"
+    if not playlists:
+        return "(no saved playlists)"
 
     lines = []
-    for session in sessions:
-        name = session.get("name", "?")
-        state = session.get("state", "stopped")
-        state_icon = {"playing": "▶", "paused": "⏸", "stopped": "⏹"}.get(state, "?")
+    for pl in playlists:
+        name = pl.get("name", "?")
+        count = pl.get("track_count", 0)
+        fmt = pl.get("format", "json")
+        lines.append(f"  {name} ({count} tracks, {fmt})")
 
-        track = session.get("track")
-        track_str = format_track(track) if track else "(no track)"
+    return "\n".join(lines)
 
-        lines.append(f"{state_icon} {name}: {track_str}")
+
+def format_devices(data: dict) -> str:
+    """Format devices response for display."""
+    devices = data.get("devices", [])
+
+    if not devices:
+        return "(no audio devices found)"
+
+    lines = []
+    for dev in devices:
+        name = dev.get("name", "Unknown")
+        # Device ID could be bytes (raw) or hex string (from daemon)
+        dev_id = dev.get("id", "")
+        if isinstance(dev_id, bytes):
+            dev_id = dev_id.hex()
+        is_default = dev.get("is_default", False)
+        default_marker = " (default)" if is_default else ""
+        lines.append(f"  {name}{default_marker}")
+        lines.append(f"    ID: {dev_id}")
 
     return "\n".join(lines)
 
@@ -186,7 +186,7 @@ def format_event(event: Event) -> str:
 def print_response(
     response: Response,
     json_output: bool = False,
-    formatter: callable = None,
+    formatter: Callable[[dict], str] | None = None,
 ) -> None:
     """Print response to stdout."""
     if json_output:

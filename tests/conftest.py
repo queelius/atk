@@ -6,16 +6,18 @@ import asyncio
 import os
 from pathlib import Path
 from typing import Generator
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
-import pytest
 import numpy as np
+import pytest
 
 
 class MockDecodedSamples:
     """Mock for miniaudio decoded samples."""
 
-    def __init__(self, duration: float = 60.0, sample_rate: int = 44100, channels: int = 2):
+    def __init__(
+        self, duration: float = 60.0, sample_rate: int = 44100, channels: int = 2
+    ):
         self.sample_rate = sample_rate
         self.nchannels = channels
         num_samples = int(duration * sample_rate * channels)

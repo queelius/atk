@@ -3,22 +3,70 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical
-from textual.widgets import Static, Footer
+from textual.widgets import DirectoryTree, Static
 
+from ..config import get_runtime_dir
+from ..protocol.messages import Event, EventType
 from .widgets import (
+    HelpBar,
     NowPlaying,
     ProgressDisplay,
     QueuePreview,
     StatusBar,
-    HelpBar,
 )
-from ..protocol.messages import Event, EventType, parse_message, Request
-from ..config import get_runtime_dir
+
+_logger = logging.getLogger("atk.tui")
+
+
+class FilePicker(Static):
+    """Simple file picker widget."""
+
+    DEFAULT_CSS = """
+    FilePicker {
+        display: none;
+        layer: overlay;
+        width: 60%;
+        height: 80%;
+        margin: 2 4;
+        border: solid $primary;
+        background: $surface;
+    }
+
+    FilePicker.visible {
+        display: block;
+    }
+
+    FilePicker DirectoryTree {
+        height: 1fr;
+    }
+
+    FilePicker .title {
+        text-style: bold;
+        padding: 1;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, start_path: str = "~"):
+        super().__init__()
+        self.start_path = Path(start_path).expanduser()
+
+    def compose(self) -> ComposeResult:
+        yield Static("Select File (Enter to select, Escape to cancel)", classes="title")
+        yield DirectoryTree(str(self.start_path))
+
+    def on_directory_tree_file_selected(
+        self, event: DirectoryTree.FileSelected
+    ) -> None:
+        """Handle file selection."""
+        self.app.file_selected(str(event.path))  # type: ignore[attr-defined]
+        self.remove_class("visible")
 
 
 class ATKApp(App):
@@ -53,17 +101,19 @@ class ATKApp(App):
         Binding("p", "prev_track", "Previous"),
         Binding("s", "toggle_shuffle", "Shuffle"),
         Binding("r", "cycle_repeat", "Repeat"),
-        Binding("a", "add_file", "Add file"),
+        Binding("f", "open_file_picker", "Add file"),
         Binding("d", "remove_current", "Remove"),
+        Binding("j", "jump_track", "Jump"),
         Binding("q", "quit", "Quit"),
     ]
 
-    def __init__(self, session: str = "default"):
+    def __init__(self):
         super().__init__()
-        self.session = session
         self._runtime_dir = get_runtime_dir()
         self._event_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
+        self._retry_count = 0
+        self._max_retries = 5
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status-bar")
@@ -73,19 +123,18 @@ class ATKApp(App):
                 yield ProgressDisplay(id="progress")
                 yield QueuePreview(id="queue-preview")
         yield HelpBar()
+        yield FilePicker()
 
     async def on_mount(self) -> None:
         """Start event listening and initial status fetch."""
-        # Ensure daemon is running
-        from ..cli.commands import ensure_daemon, send_registry_command
+        from ..cli.commands import ensure_daemon
 
-        ensure_daemon()
-
-        # Ensure session exists
-        cmd_pipe = self._runtime_dir / "sessions" / f"{self.session}.cmd"
-        if not cmd_pipe.exists():
-            send_registry_command("spawn", {"name": self.session})
-            await asyncio.sleep(0.3)
+        try:
+            ensure_daemon()
+        except Exception as e:
+            _logger.error(f"Failed to start daemon: {e}")
+            self.notify(f"Failed to start daemon: {e}", severity="error")
+            return
 
         # Initial status fetch
         await self._fetch_status()
@@ -100,132 +149,146 @@ class ATKApp(App):
         """Clean up tasks."""
         if self._event_task:
             self._event_task.cancel()
+            try:
+                await self._event_task
+            except asyncio.CancelledError:
+                pass
         if self._status_task:
             self._status_task.cancel()
+            try:
+                await self._status_task
+            except asyncio.CancelledError:
+                pass
 
     async def _fetch_status(self) -> None:
-        """Fetch current status from session."""
+        """Fetch current status from daemon."""
         try:
-            from ..cli.commands import send_session_command
+            from ..cli.commands import send_command
 
-            response = send_session_command(self.session, "status")
+            response = await asyncio.to_thread(send_command, "status")
             if response.ok and response.data:
                 self._update_from_status(response.data)
 
             # Also fetch queue
-            queue_response = send_session_command(self.session, "queue")
+            queue_response = await asyncio.to_thread(send_command, "queue")
             if queue_response.ok and queue_response.data:
                 self._update_queue(queue_response.data)
 
         except Exception as e:
-            self.notify(f"Failed to fetch status: {e}", severity="error")
+            _logger.warning(f"Failed to fetch status: {e}")
 
     def _update_from_status(self, data: dict) -> None:
         """Update UI from status data."""
-        status_bar = self.query_one("#status-bar", StatusBar)
-        status_bar.state = data.get("state", "stopped")
-        status_bar.volume = data.get("volume", 80)
-        status_bar.shuffle = data.get("shuffle", False)
-        status_bar.repeat = data.get("repeat", "none")
-        status_bar.session_name = self.session
+        try:
+            status_bar = self.query_one("#status-bar", StatusBar)
+            status_bar.state = data.get("state", "stopped")
+            status_bar.volume = data.get("volume", 80)
+            status_bar.shuffle = data.get("shuffle", False)
+            status_bar.repeat = data.get("repeat", "none")
 
-        now_playing = self.query_one("#now-playing", NowPlaying)
-        track = data.get("track")
-        if track:
-            now_playing.title = track.get("title") or track.get("uri", "Unknown").split("/")[-1]
-            now_playing.artist = track.get("artist", "")
-            now_playing.album = track.get("album", "")
-        else:
-            now_playing.title = "No track loaded"
-            now_playing.artist = ""
-            now_playing.album = ""
+            now_playing = self.query_one("#now-playing", NowPlaying)
+            track = data.get("track")
+            if track:
+                now_playing.title = (
+                    track.get("title") or track.get("uri", "Unknown").split("/")[-1]
+                )
+                now_playing.artist = track.get("artist", "")
+                now_playing.album = track.get("album", "")
+            else:
+                now_playing.title = "No track loaded"
+                now_playing.artist = ""
+                now_playing.album = ""
 
-        progress = self.query_one("#progress", ProgressDisplay)
-        progress.position = data.get("position", 0.0)
-        progress.duration = data.get("duration", 0.0)
+            progress = self.query_one("#progress", ProgressDisplay)
+            progress.position = data.get("position", 0.0)
+            progress.duration = data.get("duration", 0.0)
+        except Exception as e:
+            _logger.warning(f"Error updating status: {e}")
 
     def _update_queue(self, data: dict) -> None:
         """Update queue display."""
-        queue_preview = self.query_one("#queue-preview", QueuePreview)
-        tracks = data.get("tracks", [])
-        current = data.get("current_index", 0)
-        queue_preview.update_queue(tracks, current)
+        try:
+            queue_preview = self.query_one("#queue-preview", QueuePreview)
+            tracks = data.get("tracks", [])
+            current = data.get("current_index", 0)
+            queue_preview.update_queue(tracks, current)
+        except Exception as e:
+            _logger.warning(f"Error updating queue: {e}")
 
     async def _listen_events(self) -> None:
-        """Listen for events from session."""
-        cmd_pipe = self._runtime_dir / "sessions" / f"{self.session}.cmd"
-        resp_pipe = self._runtime_dir / "sessions" / f"{self.session}.resp"
+        """Listen for events from daemon."""
+        from ..cli.commands import subscribe_to_events
 
-        if not cmd_pipe.exists():
-            return
-
-        # Send subscribe request
-        request = Request(cmd="subscribe")
-        loop = asyncio.get_event_loop()
-
-        def write_subscribe():
-            with open(cmd_pipe, "w") as f:
-                f.write(request.serialize() + "\n")
-                f.flush()
-
-        await loop.run_in_executor(None, write_subscribe)
-
-        # Read events
-        def read_line():
+        while self._retry_count < self._max_retries:
             try:
-                with open(resp_pipe, "r") as f:
-                    return f.readline().strip()
-            except Exception:
-                return None
+                # Use thread for blocking event generator
+                def event_gen():
+                    for event in subscribe_to_events():
+                        yield event
 
-        while True:
-            try:
-                line = await loop.run_in_executor(None, read_line)
-                if line:
-                    msg = parse_message(line)
-                    if isinstance(msg, Event):
-                        self._handle_event(msg)
-                await asyncio.sleep(0.1)
+                asyncio.get_event_loop()
+                for event in subscribe_to_events():
+                    self._handle_event(event)
+                    self._retry_count = 0  # Reset on success
+
             except asyncio.CancelledError:
                 break
-            except Exception:
-                await asyncio.sleep(1)
+            except Exception as e:
+                self._retry_count += 1
+                _logger.warning(
+                    "Event loop error (retry %d/%d): %s",
+                    self._retry_count,
+                    self._max_retries,
+                    e,
+                )
+
+                if self._retry_count >= self._max_retries:
+                    self.notify("Lost connection to daemon", severity="warning")
+                    break
+
+                # Exponential backoff with limit (Bug fix 6.3)
+                await asyncio.sleep(min(2**self._retry_count, 10))
 
     def _handle_event(self, event: Event) -> None:
         """Handle incoming event."""
-        if event.event == EventType.TRACK_CHANGED:
-            track = event.data.get("track", {})
-            now_playing = self.query_one("#now-playing", NowPlaying)
-            now_playing.title = track.get("title") or track.get("uri", "Unknown").split("/")[-1]
-            now_playing.artist = track.get("artist", "")
-            now_playing.album = track.get("album", "")
+        try:
+            if event.event == EventType.TRACK_CHANGED:
+                track = event.data.get("track", {})
+                now_playing = self.query_one("#now-playing", NowPlaying)
+                now_playing.title = (
+                    track.get("title") or track.get("uri", "Unknown").split("/")[-1]
+                )
+                now_playing.artist = track.get("artist", "")
+                now_playing.album = track.get("album", "")
 
-        elif event.event == EventType.POSITION_UPDATE:
-            progress = self.query_one("#progress", ProgressDisplay)
-            progress.position = event.data.get("position", 0.0)
-            progress.duration = event.data.get("duration", 0.0)
+            elif event.event == EventType.POSITION_UPDATE:
+                progress = self.query_one("#progress", ProgressDisplay)
+                progress.position = event.data.get("position", 0.0)
+                progress.duration = event.data.get("duration", 0.0)
 
-        elif event.event == EventType.PLAYBACK_STARTED:
-            status_bar = self.query_one("#status-bar", StatusBar)
-            status_bar.state = "playing"
+            elif event.event == EventType.PLAYBACK_STARTED:
+                status_bar = self.query_one("#status-bar", StatusBar)
+                status_bar.state = "playing"
 
-        elif event.event == EventType.PLAYBACK_PAUSED:
-            status_bar = self.query_one("#status-bar", StatusBar)
-            status_bar.state = "paused"
+            elif event.event == EventType.PLAYBACK_PAUSED:
+                status_bar = self.query_one("#status-bar", StatusBar)
+                status_bar.state = "paused"
 
-        elif event.event == EventType.PLAYBACK_STOPPED:
-            status_bar = self.query_one("#status-bar", StatusBar)
-            status_bar.state = "stopped"
+            elif event.event == EventType.PLAYBACK_STOPPED:
+                status_bar = self.query_one("#status-bar", StatusBar)
+                status_bar.state = "stopped"
 
-        elif event.event == EventType.QUEUE_UPDATED:
-            queue_data = event.data.get("queue", {})
-            self._update_queue(queue_data)
+            elif event.event == EventType.QUEUE_UPDATED:
+                queue_data = event.data.get("queue", {})
+                self._update_queue(queue_data)
 
-        elif event.event == EventType.ERROR:
-            self.notify(
-                f"Error: {event.data.get('message', 'Unknown error')}",
-                severity="error",
-            )
+            elif event.event == EventType.ERROR:
+                code = event.data.get("code", "?")
+                msg = event.data.get("message", "Unknown error")
+                self.notify(f"Error [{code}]: {msg}", severity="error")
+
+        except Exception as e:
+            _logger.warning(f"Error handling event: {e}")
 
     async def _periodic_status(self) -> None:
         """Periodically fetch status as backup."""
@@ -233,20 +296,28 @@ class ATKApp(App):
             await asyncio.sleep(5)
             try:
                 await self._fetch_status()
-            except Exception:
-                pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                _logger.warning(f"Periodic status error: {e}")
 
     def _send_command(self, cmd: str, args: dict | None = None) -> None:
-        """Send command to session."""
-        try:
-            from ..cli.commands import send_session_command
+        """Send command to daemon."""
 
-            response = send_session_command(self.session, cmd, args)
-            if not response.ok:
-                error_msg = response.error.message if response.error else "Unknown error"
-                self.notify(f"Error: {error_msg}", severity="error")
-        except Exception as e:
-            self.notify(f"Command failed: {e}", severity="error")
+        async def do_send():
+            try:
+                from ..cli.commands import send_command as _send
+
+                response = await asyncio.to_thread(_send, cmd, args)
+                if not response.ok:
+                    error_msg = (
+                        response.error.message if response.error else "Unknown error"
+                    )
+                    self.notify(f"Error: {error_msg}", severity="error")
+            except Exception as e:
+                self.notify(f"Command failed: {e}", severity="error")
+
+        asyncio.create_task(do_send())
 
     # Action handlers
 
@@ -299,28 +370,46 @@ class ATKApp(App):
         """Cycle repeat mode."""
         status_bar = self.query_one("#status-bar", StatusBar)
         modes = ["none", "queue", "track"]
-        current_idx = modes.index(status_bar.repeat) if status_bar.repeat in modes else 0
+        current_idx = (
+            modes.index(status_bar.repeat) if status_bar.repeat in modes else 0
+        )
         new_mode = modes[(current_idx + 1) % len(modes)]
         self._send_command("repeat", {"mode": new_mode})
         status_bar.repeat = new_mode
 
-    def action_add_file(self) -> None:
-        """Add file (placeholder - would need file picker)."""
-        self.notify("File picker not implemented yet", severity="warning")
+    def action_open_file_picker(self) -> None:
+        """Open file picker to add file."""
+        picker = self.query_one(FilePicker)
+        picker.add_class("visible")
+
+    def file_selected(self, path: str) -> None:
+        """Handle file selection from picker."""
+        self._send_command("play", {"file": path})
+        self.notify(f"Playing: {Path(path).name}")
 
     def action_remove_current(self) -> None:
         """Remove current track from queue."""
-        from ..cli.commands import send_session_command
 
-        response = send_session_command(self.session, "status")
-        if response.ok and response.data:
-            idx = response.data.get("queue_position", 0)
-            self._send_command("remove", {"index": idx})
+        async def do_remove():
+            from ..cli.commands import send_command
+
+            response = await asyncio.to_thread(send_command, "status")
+            if response.ok and response.data:
+                idx = response.data.get("queue_position", 0)
+                self._send_command("remove", {"index": idx})
+
+        asyncio.create_task(do_remove())
+
+    def action_jump_track(self) -> None:
+        """Jump to track (show notification - use CLI for now)."""
+        self.notify(
+            "Use 'atk jump <index>' from CLI to jump to track", severity="information"
+        )
 
 
-def main(session: str = "default") -> None:
+def main() -> None:
     """Main entry point for TUI."""
-    app = ATKApp(session=session)
+    app = ATKApp()
     app.run()
 
 

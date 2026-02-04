@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import logging
 import random
 from dataclasses import dataclass, field
 from enum import Enum
@@ -11,16 +11,16 @@ from pathlib import Path
 from typing import Callable
 
 from ..protocol.messages import (
+    ErrorCode,
     Event,
     EventType,
     RepeatMode,
-    TrackInfo,
     StatusInfo,
-    QueueInfo,
-    ErrorInfo,
-    ErrorCode,
+    TrackInfo,
 )
 from .player import Player, get_track_duration, is_supported_format
+
+_logger = logging.getLogger("atk.session")
 
 
 class PlaybackState(str, Enum):
@@ -45,14 +45,7 @@ class Session:
     repeat: RepeatMode = RepeatMode.NONE
     volume: int = 80
     position: float = 0.0
-    # DSP parameters
     rate: float = 1.0
-    pitch: float = 0.0
-    bass: float = 0.0
-    treble: float = 0.0
-    loop_a: float | None = None
-    loop_b: float | None = None
-    loop_enabled: bool = False
     _event_callback: Callable[[Event], None] | None = None
     _position_task: asyncio.Task | None = None
 
@@ -71,7 +64,17 @@ class Session:
 
     def _on_track_end(self) -> None:
         """Handle track ending."""
-        asyncio.create_task(self._handle_track_end())
+        task = asyncio.create_task(self._handle_track_end())
+        # Add exception handler to prevent unhandled exceptions (Bug fix 6.2)
+        task.add_done_callback(self._handle_task_exception)
+
+    def _handle_task_exception(self, task: asyncio.Task) -> None:
+        """Log exceptions from background tasks."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            _logger.error(f"Background task error: {exc}", exc_info=exc)
 
     async def _handle_track_end(self) -> None:
         """Process track end - advance queue or repeat."""
@@ -96,7 +99,16 @@ class Session:
             return False
 
         if self.shuffle:
-            current_shuffle_idx = self.shuffle_order.index(self.queue_position)
+            # Bug fix 6.1: Handle ValueError when queue_position not in shuffle_order
+            try:
+                current_shuffle_idx = self.shuffle_order.index(self.queue_position)
+            except ValueError:
+                # Position not in shuffle order, fallback to linear
+                _logger.warning(
+                    "Queue position not in shuffle order, falling back to linear"
+                )
+                return self._advance_linear()
+
             next_shuffle_idx = current_shuffle_idx + 1
 
             if next_shuffle_idx >= len(self.shuffle_order):
@@ -109,14 +121,19 @@ class Session:
 
             self.queue_position = self.shuffle_order[next_shuffle_idx]
         else:
-            next_pos = self.queue_position + 1
-            if next_pos >= len(self.queue):
-                if self.repeat == RepeatMode.QUEUE:
-                    next_pos = 0
-                else:
-                    return False
-            self.queue_position = next_pos
+            return self._advance_linear()
 
+        return True
+
+    def _advance_linear(self) -> bool:
+        """Advance to next track in linear order."""
+        next_pos = self.queue_position + 1
+        if next_pos >= len(self.queue):
+            if self.repeat == RepeatMode.QUEUE:
+                next_pos = 0
+            else:
+                return False
+        self.queue_position = next_pos
         return True
 
     def _go_previous(self) -> bool:
@@ -125,7 +142,16 @@ class Session:
             return False
 
         if self.shuffle:
-            current_shuffle_idx = self.shuffle_order.index(self.queue_position)
+            # Bug fix 6.1: Handle ValueError when queue_position not in shuffle_order
+            try:
+                current_shuffle_idx = self.shuffle_order.index(self.queue_position)
+            except ValueError:
+                # Position not in shuffle order, fallback to linear
+                _logger.warning(
+                    "Queue position not in shuffle order, falling back to linear"
+                )
+                return self._go_previous_linear()
+
             prev_shuffle_idx = current_shuffle_idx - 1
 
             if prev_shuffle_idx < 0:
@@ -136,14 +162,19 @@ class Session:
 
             self.queue_position = self.shuffle_order[prev_shuffle_idx]
         else:
-            prev_pos = self.queue_position - 1
-            if prev_pos < 0:
-                if self.repeat == RepeatMode.QUEUE:
-                    prev_pos = len(self.queue) - 1
-                else:
-                    return False
-            self.queue_position = prev_pos
+            return self._go_previous_linear()
 
+        return True
+
+    def _go_previous_linear(self) -> bool:
+        """Go to previous track in linear order."""
+        prev_pos = self.queue_position - 1
+        if prev_pos < 0:
+            if self.repeat == RepeatMode.QUEUE:
+                prev_pos = len(self.queue) - 1
+            else:
+                return False
+        self.queue_position = prev_pos
         return True
 
     def _regenerate_shuffle(self) -> None:
@@ -234,10 +265,10 @@ class Session:
                         EventType.POSITION_UPDATE,
                         {"position": self.position, "duration": duration or 0.0},
                     )
-                # Check for track end event
-                self.player.check_end_event()
 
         self._position_task = asyncio.create_task(update_loop())
+        # Add exception handler (Bug fix 6.2)
+        self._position_task.add_done_callback(self._handle_task_exception)
 
     async def stop_position_updates(self) -> None:
         """Stop position updates."""
@@ -262,7 +293,22 @@ class Session:
             self.queue_position = len(self.queue) - 1
 
             if self.shuffle:
-                self.shuffle_order.append(len(self.queue) - 1)
+                # Bug fix 6.4: Insert at random position after current, not append
+                if self.shuffle_order:
+                    try:
+                        current_idx = (
+                            self.shuffle_order.index(self.queue_position - 1)
+                            if self.queue_position > 0
+                            else -1
+                        )
+                        insert_pos = random.randint(
+                            current_idx + 1, len(self.shuffle_order)
+                        )
+                    except ValueError:
+                        insert_pos = len(self.shuffle_order)
+                else:
+                    insert_pos = 0
+                self.shuffle_order.insert(insert_pos, len(self.queue) - 1)
 
             self._emit(EventType.QUEUE_UPDATED, {"queue": self._get_queue_data()})
             await self._play_current()
@@ -338,11 +384,17 @@ class Session:
 
         self.queue.append(uri)
         if self.shuffle:
-            # Insert at random position in shuffle order
-            insert_pos = random.randint(
-                self.shuffle_order.index(self.queue_position) + 1,
-                len(self.shuffle_order),
-            ) if self.shuffle_order else 0
+            # Bug fix 6.4: Insert at random position after current, not append
+            if self.shuffle_order:
+                try:
+                    current_idx = self.shuffle_order.index(self.queue_position)
+                    insert_pos = random.randint(
+                        current_idx + 1, len(self.shuffle_order)
+                    )
+                except ValueError:
+                    insert_pos = len(self.shuffle_order)
+            else:
+                insert_pos = 0
             self.shuffle_order.insert(insert_pos, len(self.queue) - 1)
 
         self._emit(EventType.QUEUE_UPDATED, {"queue": self._get_queue_data()})
@@ -368,8 +420,11 @@ class Session:
                     self.state = PlaybackState.STOPPED
 
         # Update shuffle order
-        if self.shuffle:
-            self.shuffle_order.remove(index)
+        if self.shuffle and self.shuffle_order:
+            try:
+                self.shuffle_order.remove(index)
+            except ValueError:
+                pass
             self.shuffle_order = [i if i < index else i - 1 for i in self.shuffle_order]
 
         self._emit(EventType.QUEUE_UPDATED, {"queue": self._get_queue_data()})
@@ -431,54 +486,14 @@ class Session:
         self.player.set_rate(self.rate)
         return {"rate": self.rate}
 
-    async def cmd_pitch(self, semitones: float) -> dict:
-        """Set pitch shift in semitones (-12 to +12)."""
-        self.pitch = max(-12.0, min(12.0, semitones))
-        self.player.set_pitch(self.pitch)
-        return {"pitch": self.pitch}
+    async def cmd_jump(self, index: int) -> dict:
+        """Jump to track at index in queue."""
+        if index < 0 or index >= len(self.queue):
+            raise IndexError(f"Invalid queue index: {index}")
 
-    async def cmd_bass(self, db: float) -> dict:
-        """Set bass EQ adjustment in dB (-12 to +12)."""
-        self.bass = max(-12.0, min(12.0, db))
-        self.player.set_bass(self.bass)
-        return {"bass": self.bass}
-
-    async def cmd_treble(self, db: float) -> dict:
-        """Set treble EQ adjustment in dB (-12 to +12)."""
-        self.treble = max(-12.0, min(12.0, db))
-        self.player.set_treble(self.treble)
-        return {"treble": self.treble}
-
-    async def cmd_fade(self, to: int, duration: float) -> dict:
-        """Fade volume to target over duration in seconds."""
-        self.player.start_fade(to, duration)
-        return {"fading_to": to, "duration": duration}
-
-    async def cmd_loop(
-        self,
-        a: float | None = None,
-        b: float | None = None,
-        enabled: bool | None = None,
-    ) -> dict:
-        """Set A/B loop points or enable/disable loop."""
-        if a is not None:
-            self.loop_a = a
-        if b is not None:
-            self.loop_b = b
-        if enabled is not None:
-            self.loop_enabled = enabled
-        elif a is not None or b is not None:
-            # Setting points implicitly enables loop
-            self.loop_enabled = True
-
-        self.player.set_loop_points(self.loop_a, self.loop_b)
-        self.player.set_loop_enabled(self.loop_enabled)
-
-        return {
-            "loop_a": self.loop_a,
-            "loop_b": self.loop_b,
-            "loop_enabled": self.loop_enabled,
-        }
+        self.queue_position = index
+        await self._play_current()
+        return {"queue_position": self.queue_position}
 
     async def cmd_queue(self) -> dict:
         """Get queue contents."""
@@ -500,12 +515,6 @@ class Session:
             queue_length=len(self.queue),
             queue_position=self.queue_position,
             rate=self.rate,
-            pitch=self.pitch,
-            bass=self.bass,
-            treble=self.treble,
-            loop_a=self.loop_a,
-            loop_b=self.loop_b,
-            loop_enabled=self.loop_enabled,
         )
         return status.to_dict()
 
@@ -539,12 +548,6 @@ class Session:
             "repeat": self.repeat.value,
             "volume": self.volume,
             "rate": self.rate,
-            "pitch": self.pitch,
-            "bass": self.bass,
-            "treble": self.treble,
-            "loop_a": self.loop_a,
-            "loop_b": self.loop_b,
-            "loop_enabled": self.loop_enabled,
         }
 
     @classmethod
@@ -559,18 +562,6 @@ class Session:
         session.repeat = RepeatMode(data.get("repeat", "none"))
         session.volume = data.get("volume", 80)
         session.player.set_volume(session.volume)
-        # DSP parameters
         session.rate = data.get("rate", 1.0)
-        session.pitch = data.get("pitch", 0.0)
-        session.bass = data.get("bass", 0.0)
-        session.treble = data.get("treble", 0.0)
-        session.loop_a = data.get("loop_a")
-        session.loop_b = data.get("loop_b")
-        session.loop_enabled = data.get("loop_enabled", False)
         session.player.set_rate(session.rate)
-        session.player.set_pitch(session.pitch)
-        session.player.set_bass(session.bass)
-        session.player.set_treble(session.treble)
-        session.player.set_loop_points(session.loop_a, session.loop_b)
-        session.player.set_loop_enabled(session.loop_enabled)
         return session

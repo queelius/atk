@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import os
-import stat
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
-from ..protocol.messages import Request, Response, Event, ErrorInfo, ErrorCode, parse_message
+from ..protocol.messages import (
+    ErrorCode,
+    ErrorInfo,
+    Event,
+    Request,
+    Response,
+    parse_message,
+)
 
 
 class PipeHandler:
@@ -165,7 +171,7 @@ class MultiClientPipeHandler:
         self._handler = handler
         self._running = False
         self._task: asyncio.Task | None = None
-        self._subscribers: dict[str, asyncio.Queue[Event]] = {}
+        self._subscribers: dict[str, asyncio.Queue[Response | Event]] = {}
         self._response_queues: dict[str, asyncio.Queue[Response | Event]] = {}
 
     async def start(self) -> None:
@@ -204,6 +210,7 @@ class MultiClientPipeHandler:
 
         try:
             while self._running:
+
                 def read_line() -> str | None:
                     try:
                         with open(self.cmd_pipe, "r") as f:
@@ -296,6 +303,7 @@ class MultiClientPipeHandler:
                 del self._response_queues[req_id]
 
             if to_send:
+
                 def write_lines() -> None:
                     try:
                         with open(self.resp_pipe, "w") as f:

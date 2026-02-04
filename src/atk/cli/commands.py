@@ -2,27 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 from ..config import get_runtime_dir
-from ..protocol.messages import Response, Event, parse_message
+from ..protocol.messages import Event, Response, parse_message
 
 
 def is_daemon_running() -> bool:
     """Check if daemon is running."""
     runtime = get_runtime_dir()
-    return (runtime / "registry.cmd").exists()
+    return (runtime / "atk.cmd").exists()
 
 
 def start_daemon() -> None:
     """Start the daemon in background."""
-    import os
-
     # Use subprocess to start daemon
     subprocess.Popen(
         [sys.executable, "-m", "atk.daemon.main"],
@@ -34,7 +30,7 @@ def start_daemon() -> None:
     # Wait for daemon to start
     runtime = get_runtime_dir()
     for _ in range(50):  # 5 seconds max
-        if (runtime / "registry.cmd").exists():
+        if (runtime / "atk.cmd").exists():
             return
         time.sleep(0.1)
 
@@ -47,15 +43,15 @@ def ensure_daemon() -> None:
         start_daemon()
 
 
-def send_registry_command(cmd: str, args: dict | None = None) -> Response:
-    """Send command to registry and get response."""
+def send_command(cmd: str, args: dict | None = None) -> Response:
+    """Send command to daemon and get response."""
     ensure_daemon()
 
     from ..protocol.messages import Request
 
     runtime = get_runtime_dir()
-    cmd_pipe = runtime / "registry.cmd"
-    resp_pipe = runtime / "registry.resp"
+    cmd_pipe = runtime / "atk.cmd"
+    resp_pipe = runtime / "atk.resp"
 
     request = Request(cmd=cmd, args=args or {})
 
@@ -81,67 +77,15 @@ def send_registry_command(cmd: str, args: dict | None = None) -> Response:
                 return msg
 
 
-def send_session_command(
-    session: str,
-    cmd: str,
-    args: dict | None = None,
-) -> Response:
-    """Send command to session and get response."""
+def subscribe_to_events():
+    """Generator that yields events from daemon."""
     ensure_daemon()
 
     from ..protocol.messages import Request
 
     runtime = get_runtime_dir()
-    cmd_pipe = runtime / "sessions" / f"{session}.cmd"
-    resp_pipe = runtime / "sessions" / f"{session}.resp"
-
-    # Check if session exists
-    if not cmd_pipe.exists():
-        # Try to spawn default session
-        if session == "default":
-            spawn_resp = send_registry_command("spawn", {"name": "default"})
-            if not spawn_resp.ok:
-                raise RuntimeError(f"Failed to create default session: {spawn_resp.error}")
-            time.sleep(0.2)  # Wait for pipes to be created
-        else:
-            raise RuntimeError(f"Session '{session}' not found")
-
-    request = Request(cmd=cmd, args=args or {})
-
-    # Write request
-    with open(cmd_pipe, "w") as f:
-        f.write(request.serialize() + "\n")
-        f.flush()
-
-    # Read response
-    import select
-
-    with open(resp_pipe, "r") as f:
-        ready, _, _ = select.select([f], [], [], 5.0)
-        if not ready:
-            raise TimeoutError("No response from session")
-
-        while True:
-            line = f.readline().strip()
-            if not line:
-                continue
-            msg = parse_message(line)
-            if isinstance(msg, Response) and msg.id == request.id:
-                return msg
-
-
-def subscribe_to_session(session: str):
-    """Generator that yields events from session."""
-    ensure_daemon()
-
-    from ..protocol.messages import Request
-
-    runtime = get_runtime_dir()
-    cmd_pipe = runtime / "sessions" / f"{session}.cmd"
-    resp_pipe = runtime / "sessions" / f"{session}.resp"
-
-    if not cmd_pipe.exists():
-        raise RuntimeError(f"Session '{session}' not found")
+    cmd_pipe = runtime / "atk.cmd"
+    resp_pipe = runtime / "atk.resp"
 
     request = Request(cmd="subscribe")
 
@@ -168,27 +112,7 @@ def subscribe_to_session(session: str):
                             raise RuntimeError(f"Subscribe failed: {msg.error}")
 
 
-# Helper to get session name with default fallback
-def get_session(session: str | None) -> str:
-    """Get session name, defaulting to 'default'."""
-    return session or "default"
-
-
 # Command implementations
-
-def cmd_list() -> Response:
-    """List all sessions."""
-    return send_registry_command("list")
-
-
-def cmd_new(name: str | None = None) -> Response:
-    """Create new session."""
-    return send_registry_command("spawn", {"name": name} if name else {})
-
-
-def cmd_kill(name: str) -> Response:
-    """Kill a session."""
-    return send_registry_command("kill", {"name": name})
 
 
 def cmd_daemon_stop() -> None:
@@ -206,33 +130,33 @@ def cmd_daemon_stop() -> None:
     os.kill(pid, signal.SIGTERM)
 
 
-def cmd_play(file: str | None, session: str | None) -> Response:
+def cmd_play(file: str | None) -> Response:
     """Play file or resume."""
     args = {"file": file} if file else {}
-    return send_session_command(get_session(session), "play", args)
+    return send_command("play", args)
 
 
-def cmd_pause(session: str | None) -> Response:
+def cmd_pause() -> Response:
     """Pause playback."""
-    return send_session_command(get_session(session), "pause")
+    return send_command("pause")
 
 
-def cmd_stop(session: str | None) -> Response:
+def cmd_stop() -> Response:
     """Stop playback."""
-    return send_session_command(get_session(session), "stop")
+    return send_command("stop")
 
 
-def cmd_next(session: str | None) -> Response:
+def cmd_next() -> Response:
     """Next track."""
-    return send_session_command(get_session(session), "next")
+    return send_command("next")
 
 
-def cmd_prev(session: str | None) -> Response:
+def cmd_prev() -> Response:
     """Previous track."""
-    return send_session_command(get_session(session), "prev")
+    return send_command("prev")
 
 
-def cmd_seek(position: str, session: str | None) -> Response:
+def cmd_seek(position: str) -> Response:
     """Seek to position."""
     # Parse position (supports +5, -10, 1:30, 90)
     pos: float | str
@@ -251,74 +175,77 @@ def cmd_seek(position: str, session: str | None) -> Response:
     else:
         pos = float(position)
 
-    return send_session_command(get_session(session), "seek", {"pos": pos})
+    return send_command("seek", {"pos": pos})
 
 
-def cmd_volume(level: int, session: str | None) -> Response:
+def cmd_volume(level: int) -> Response:
     """Set volume."""
-    return send_session_command(get_session(session), "volume", {"level": level})
+    return send_command("volume", {"level": level})
 
 
-def cmd_add(uri: str, session: str | None) -> Response:
+def cmd_add(uri: str) -> Response:
     """Add to queue."""
     # Expand path if local file
     path = Path(uri).expanduser()
     if path.exists():
         uri = str(path.resolve())
-    return send_session_command(get_session(session), "add", {"uri": uri})
+    return send_command("add", {"uri": uri})
 
 
-def cmd_remove(index: int, session: str | None) -> Response:
+def cmd_remove(index: int) -> Response:
     """Remove from queue."""
-    return send_session_command(get_session(session), "remove", {"index": index})
+    return send_command("remove", {"index": index})
 
 
-def cmd_move(from_idx: int, to_idx: int, session: str | None) -> Response:
+def cmd_move(from_idx: int, to_idx: int) -> Response:
     """Move in queue."""
-    return send_session_command(
-        get_session(session), "move", {"from": from_idx, "to": to_idx}
-    )
+    return send_command("move", {"from": from_idx, "to": to_idx})
 
 
-def cmd_clear(session: str | None) -> Response:
+def cmd_clear() -> Response:
     """Clear queue."""
-    return send_session_command(get_session(session), "clear")
+    return send_command("clear")
 
 
-def cmd_queue(session: str | None) -> Response:
+def cmd_queue() -> Response:
     """Get queue."""
-    return send_session_command(get_session(session), "queue")
+    return send_command("queue")
 
 
-def cmd_status(session: str | None) -> Response:
+def cmd_jump(index: int) -> Response:
+    """Jump to track at index."""
+    return send_command("jump", {"index": index})
+
+
+def cmd_status() -> Response:
     """Get status."""
-    return send_session_command(get_session(session), "status")
+    return send_command("status")
 
 
-def cmd_info(index: int | None, session: str | None) -> Response:
+def cmd_info(index: int | None) -> Response:
     """Get track info."""
     args = {"index": index} if index is not None else {}
-    return send_session_command(get_session(session), "info", args)
+    return send_command("info", args)
 
 
-def cmd_shuffle(enabled: bool | None, session: str | None) -> Response:
+def cmd_shuffle(enabled: bool | None) -> Response:
     """Toggle shuffle."""
     if enabled is None:
         # Toggle current state
-        status = send_session_command(get_session(session), "status")
+        status = send_command("status")
         if status.ok and status.data:
             enabled = not status.data.get("shuffle", False)
         else:
             enabled = True
 
-    return send_session_command(get_session(session), "shuffle", {"enabled": enabled})
+    return send_command("shuffle", {"enabled": enabled})
 
 
-def cmd_repeat(mode: str | None, session: str | None) -> Response:
+def cmd_repeat(mode: str | None) -> Response:
     """Set repeat mode."""
     if mode is None:
         # Cycle: none -> queue -> track -> none
-        status = send_session_command(get_session(session), "status")
+        status = send_command("status")
         if status.ok and status.data:
             current = status.data.get("repeat", "none")
             mode = {"none": "queue", "queue": "track", "track": "none"}.get(
@@ -327,58 +254,44 @@ def cmd_repeat(mode: str | None, session: str | None) -> Response:
         else:
             mode = "queue"
 
-    return send_session_command(get_session(session), "repeat", {"mode": mode})
+    return send_command("repeat", {"mode": mode})
 
 
-def cmd_save(name: str, session: str | None) -> Response:
-    """Save session state."""
-    return send_session_command(get_session(session), "save", {"name": name})
-
-
-def cmd_load(name: str, session: str | None) -> Response:
-    """Load session state."""
-    return send_session_command(get_session(session), "load", {"name": name})
-
-
-def cmd_rate(speed: float, session: str | None) -> Response:
+def cmd_rate(speed: float) -> Response:
     """Set playback rate (0.25 to 4.0)."""
-    return send_session_command(get_session(session), "rate", {"speed": speed})
+    return send_command("rate", {"speed": speed})
 
 
-def cmd_pitch(semitones: float, session: str | None) -> Response:
-    """Set pitch shift in semitones (-12 to +12)."""
-    return send_session_command(get_session(session), "pitch", {"semitones": semitones})
+def cmd_save(name: str, fmt: str = "json") -> Response:
+    """Save queue as playlist."""
+    return send_command("save", {"name": name, "format": fmt})
 
 
-def cmd_bass(db: float, session: str | None) -> Response:
-    """Set bass EQ adjustment in dB (-12 to +12)."""
-    return send_session_command(get_session(session), "bass", {"db": db})
+def cmd_load(name: str) -> Response:
+    """Load playlist."""
+    return send_command("load", {"name": name})
 
 
-def cmd_treble(db: float, session: str | None) -> Response:
-    """Set treble EQ adjustment in dB (-12 to +12)."""
-    return send_session_command(get_session(session), "treble", {"db": db})
+def cmd_playlists() -> Response:
+    """List saved playlists."""
+    return send_command("playlists")
 
 
-def cmd_fade(to: int, duration: float, session: str | None) -> Response:
-    """Fade volume to target over duration."""
-    return send_session_command(
-        get_session(session), "fade", {"to": to, "duration": duration}
-    )
+def cmd_ping() -> Response:
+    """Ping daemon."""
+    return send_command("ping")
 
 
-def cmd_loop(
-    a: float | None,
-    b: float | None,
-    enabled: bool | None,
-    session: str | None,
-) -> Response:
-    """Set A/B loop points or enable/disable loop."""
-    args: dict = {}
-    if a is not None:
-        args["a"] = a
-    if b is not None:
-        args["b"] = b
-    if enabled is not None:
-        args["enabled"] = enabled
-    return send_session_command(get_session(session), "loop", args)
+def cmd_shutdown() -> Response:
+    """Shutdown daemon gracefully."""
+    return send_command("shutdown")
+
+
+def cmd_devices() -> Response:
+    """List available audio devices."""
+    return send_command("devices")
+
+
+def cmd_set_device(device_id: str | None) -> Response:
+    """Set playback device by ID."""
+    return send_command("set-device", {"device_id": device_id})
