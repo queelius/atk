@@ -21,7 +21,6 @@ class MockDecodedSamples:
         self.sample_rate = sample_rate
         self.nchannels = channels
         num_samples = int(duration * sample_rate * channels)
-        # Create silent audio data
         self.samples = np.zeros(num_samples, dtype=np.float32)
 
 
@@ -33,19 +32,15 @@ class MockPlaybackDevice:
         self.nchannels = kwargs.get("nchannels", 2)
         self.sample_rate = kwargs.get("sample_rate", 44100)
         self._generator = None
-        self._running = False
 
     def start(self, generator):
         self._generator = generator
-        self._running = True
-        # Prime the generator
         try:
             next(generator)
         except StopIteration:
             pass
 
     def close(self):
-        self._running = False
         self._generator = None
 
 
@@ -54,16 +49,12 @@ def temp_runtime_dir(tmp_path: Path) -> Generator[Path, None, None]:
     """Create a temporary runtime directory."""
     runtime = tmp_path / "atk-test"
     runtime.mkdir(parents=True)
-    sessions = runtime / "sessions"
-    sessions.mkdir()
 
-    # Set environment variable
     old_env = os.environ.get("ATK_RUNTIME_DIR")
     os.environ["ATK_RUNTIME_DIR"] = str(runtime)
 
     yield runtime
 
-    # Restore environment
     if old_env:
         os.environ["ATK_RUNTIME_DIR"] = old_env
     else:
@@ -71,65 +62,49 @@ def temp_runtime_dir(tmp_path: Path) -> Generator[Path, None, None]:
 
 
 @pytest.fixture
-def temp_state_dir(tmp_path: Path) -> Generator[Path, None, None]:
-    """Create a temporary state directory."""
-    state = tmp_path / "state"
-    state.mkdir(parents=True)
+def temp_data_dir(tmp_path: Path) -> Generator[Path, None, None]:
+    """Create a temporary data directory."""
+    old_env = os.environ.get("XDG_DATA_HOME")
+    os.environ["XDG_DATA_HOME"] = str(tmp_path)
 
-    old_env = os.environ.get("XDG_STATE_HOME")
-    os.environ["XDG_STATE_HOME"] = str(tmp_path)
-
-    yield state
+    yield tmp_path / "atk"
 
     if old_env:
-        os.environ["XDG_STATE_HOME"] = old_env
+        os.environ["XDG_DATA_HOME"] = old_env
     else:
-        os.environ.pop("XDG_STATE_HOME", None)
+        os.environ.pop("XDG_DATA_HOME", None)
 
 
 @pytest.fixture
 def mock_miniaudio():
     """Mock miniaudio for tests."""
     mock_ma = MagicMock()
-
-    # Mock SampleFormat enum
     mock_ma.SampleFormat = MagicMock()
     mock_ma.SampleFormat.FLOAT32 = "float32"
-
-    # Mock decode_file to return mock decoded samples
-    def mock_decode_file(path, **kwargs):
-        return MockDecodedSamples()
-
-    mock_ma.decode_file = mock_decode_file
-
-    # Mock PlaybackDevice
+    mock_ma.decode_file = lambda path, **kw: MockDecodedSamples()
     mock_ma.PlaybackDevice = MockPlaybackDevice
-
-    # Mock file info functions
     mock_info = MagicMock()
     mock_info.duration = 60.0
     mock_ma.mp3_get_file_info = MagicMock(return_value=mock_info)
     mock_ma.get_file_info = MagicMock(return_value=mock_info)
 
     with patch.dict("sys.modules", {"miniaudio": mock_ma}):
-        with patch("atk.daemon.player.miniaudio", mock_ma):
+        with patch("atk.player.miniaudio", mock_ma):
             yield mock_ma
 
 
 @pytest.fixture
 def mock_player(mock_miniaudio):
     """Create a mocked Player instance."""
-    from atk.daemon.player import Player
+    from atk.player import Player
 
-    player = Player()
-    return player
+    return Player()
 
 
 @pytest.fixture
 def sample_audio_file(tmp_path: Path) -> Path:
     """Create a sample audio file for testing."""
     audio_file = tmp_path / "test.mp3"
-    # Create a minimal file (not a real audio file, but enough for path tests)
     audio_file.write_bytes(b"\x00" * 1024)
     return audio_file
 

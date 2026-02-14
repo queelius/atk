@@ -1,479 +1,463 @@
-"""Tests for ATK CLI."""
+"""Tests for ATK CLI (formatters, commands, seek parser)."""
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
-from atk.cli.main import cli
-from atk.cli.output import (
-    format_devices,
-    format_playlists,
-    format_queue,
-    format_status,
-    format_time,
-    format_track,
+from atk.cli import (
+    cli,
+    fmt_devices,
+    fmt_event,
+    fmt_playlists,
+    fmt_queue,
+    fmt_status,
+    fmt_time,
+    fmt_track,
+    parse_seek,
 )
-from atk.protocol.messages import Response
 
 
-class TestOutputFormatters:
-    """Tests for CLI output formatting."""
+class TestFormatters:
+    def test_time_seconds(self):
+        assert fmt_time(30) == "0:30"
+        assert fmt_time(90) == "1:30"
+        assert fmt_time(0) == "0:00"
 
-    def test_format_time_seconds(self):
-        """Test formatting seconds."""
-        assert format_time(30) == "0:30"
-        assert format_time(90) == "1:30"
-        assert format_time(0) == "0:00"
+    def test_time_minutes(self):
+        assert fmt_time(180) == "3:00"
+        assert fmt_time(195) == "3:15"
 
-    def test_format_time_minutes(self):
-        """Test formatting minutes."""
-        assert format_time(180) == "3:00"
-        assert format_time(195) == "3:15"
+    def test_time_hours(self):
+        assert fmt_time(3600) == "1:00:00"
+        assert fmt_time(3661) == "1:01:01"
 
-    def test_format_time_hours(self):
-        """Test formatting hours."""
-        assert format_time(3600) == "1:00:00"
-        assert format_time(3661) == "1:01:01"
+    def test_time_negative(self):
+        assert fmt_time(-5) == "0:00"
 
-    def test_format_time_negative(self):
-        """Test formatting negative time."""
-        assert format_time(-5) == "0:00"
+    def test_track_basic(self):
+        assert "song.mp3" in fmt_track({"uri": "/path/to/song.mp3"})
 
-    def test_format_track_basic(self):
-        """Test formatting basic track."""
-        track = {"uri": "/path/to/song.mp3"}
-        assert "song.mp3" in format_track(track)
-
-    def test_format_track_with_metadata(self):
-        """Test formatting track with metadata."""
+    def test_track_with_metadata(self):
         track = {
             "uri": "/path/to/song.mp3",
             "title": "Test Song",
             "artist": "Test Artist",
             "duration": 180,
         }
-        result = format_track(track)
+        result = fmt_track(track)
         assert "Test Artist" in result
         assert "Test Song" in result
         assert "3:00" in result
 
-    def test_format_track_none(self):
-        """Test formatting None track."""
-        assert format_track(None) == "(no track)"
+    def test_track_none(self):
+        assert fmt_track(None) == "(no track)"
 
-    def test_format_status(self):
-        """Test formatting status."""
-        status = {
-            "state": "playing",
-            "track": {"title": "Test", "artist": "Artist"},
-            "position": 30,
-            "duration": 180,
-            "volume": 80,
-            "shuffle": True,
-            "repeat": "queue",
-            "queue_length": 5,
-            "queue_position": 2,
-        }
-        result = format_status(status)
-        assert "▶" in result  # Playing icon
+    def test_track_no_duration(self):
+        result = fmt_track({"title": "X"}, duration=False)
+        assert "X" in result
+        assert "[" not in result
+
+    def test_status_playing(self):
+        result = fmt_status(
+            {
+                "state": "playing",
+                "track": {"title": "Test", "artist": "Artist"},
+                "position": 30,
+                "duration": 180,
+                "volume": 80,
+                "shuffle": True,
+                "repeat": "queue",
+                "queue_length": 5,
+                "queue_position": 2,
+            }
+        )
+        assert "\u25b6" in result
         assert "80%" in result
 
-    def test_format_status_with_rate(self):
-        """Test formatting status with non-default rate."""
-        status = {
-            "state": "playing",
-            "track": {"title": "Test"},
-            "position": 30,
-            "duration": 180,
-            "volume": 80,
-            "shuffle": False,
-            "repeat": "none",
-            "queue_length": 1,
-            "queue_position": 0,
-            "rate": 1.5,
-        }
-        result = format_status(status)
+    def test_status_with_rate(self):
+        result = fmt_status(
+            {
+                "state": "playing",
+                "track": {"title": "Test"},
+                "position": 30,
+                "duration": 180,
+                "volume": 80,
+                "shuffle": False,
+                "repeat": "none",
+                "queue_length": 1,
+                "queue_position": 0,
+                "rate": 1.5,
+            }
+        )
         assert "1.50x" in result
 
-    def test_format_queue_empty(self):
-        """Test formatting empty queue."""
-        assert format_queue({"tracks": [], "current_index": 0}) == "(empty queue)"
+    def test_status_stopped(self):
+        result = fmt_status(
+            {
+                "state": "stopped",
+                "track": None,
+                "volume": 80,
+            }
+        )
+        assert "\u23f9" in result
 
-    def test_format_queue_with_tracks(self):
-        """Test formatting queue with tracks."""
-        data = {
-            "tracks": [
-                {"uri": "track1.mp3", "title": "Track 1"},
-                {"uri": "track2.mp3", "title": "Track 2"},
-            ],
-            "current_index": 0,
-        }
-        result = format_queue(data)
+    def test_queue_empty(self):
+        assert fmt_queue({"tracks": [], "current_index": 0}) == "(empty queue)"
+
+    def test_queue_with_tracks(self):
+        result = fmt_queue(
+            {
+                "tracks": [
+                    {"uri": "track1.mp3", "title": "Track 1"},
+                    {"uri": "track2.mp3", "title": "Track 2"},
+                ],
+                "current_index": 0,
+            }
+        )
         assert "Track 1" in result
         assert "Track 2" in result
-        assert "▶" in result  # Current track indicator
+        assert "\u25b6" in result
 
-    def test_format_playlists_empty(self):
-        """Test formatting empty playlists."""
-        assert format_playlists({"playlists": []}) == "(no saved playlists)"
+    def test_playlists_empty(self):
+        assert fmt_playlists({"playlists": []}) == "(no saved playlists)"
 
-    def test_format_playlists_with_data(self):
-        """Test formatting playlists with data."""
-        data = {
-            "playlists": [
-                {"name": "favorites", "track_count": 10, "format": "json"},
-                {"name": "workout", "track_count": 5, "format": "m3u"},
-            ],
-        }
-        result = format_playlists(data)
+    def test_playlists_with_data(self):
+        result = fmt_playlists(
+            {
+                "playlists": [
+                    {"name": "favorites", "track_count": 10, "format": "json"},
+                    {"name": "workout", "track_count": 5, "format": "m3u"},
+                ],
+            }
+        )
         assert "favorites" in result
         assert "10 tracks" in result
         assert "workout" in result
 
-    def test_format_devices_empty(self):
-        """Test formatting empty devices list."""
-        assert format_devices({"devices": []}) == "(no audio devices found)"
+    def test_devices_empty(self):
+        assert fmt_devices({"devices": []}) == "(no audio devices found)"
 
-    def test_format_devices_with_data(self):
-        """Test formatting devices list with data."""
-        # Test with hex strings (as returned by daemon)
-        data = {
-            "devices": [
-                {"name": "Built-in Audio", "id": "010203", "is_default": True},
-                {"name": "USB Headphones", "id": "040506", "is_default": False},
-            ],
-        }
-        result = format_devices(data)
+    def test_devices_with_data(self):
+        result = fmt_devices(
+            {
+                "devices": [
+                    {"name": "Built-in Audio", "id": "010203", "is_default": True},
+                    {"name": "USB Headphones", "id": "040506", "is_default": False},
+                ],
+            }
+        )
         assert "Built-in Audio" in result
         assert "(default)" in result
         assert "USB Headphones" in result
-        assert "010203" in result  # hex device ID
+        assert "010203" in result
 
-    def test_format_devices_with_bytes(self):
-        """Test formatting devices list with raw bytes (direct from player)."""
-        data = {
-            "devices": [
-                {"name": "Built-in Audio", "id": b"\x01\x02\x03", "is_default": True},
-            ],
-        }
-        result = format_devices(data)
-        assert "Built-in Audio" in result
-        assert "010203" in result  # converted to hex
+    def test_devices_with_bytes(self):
+        result = fmt_devices(
+            {
+                "devices": [
+                    {
+                        "name": "Built-in Audio",
+                        "id": b"\x01\x02\x03",
+                        "is_default": True,
+                    },
+                ],
+            }
+        )
+        assert "010203" in result
+
+    def test_event_track_changed(self):
+        result = fmt_event(
+            {"event": "track_changed", "data": {"track": {"title": "X"}}}
+        )
+        assert "track_changed" in result
+        assert "X" in result
+
+    def test_event_position(self):
+        result = fmt_event(
+            {"event": "position_update", "data": {"position": 30, "duration": 60}}
+        )
+        assert "0:30" in result
+
+    def test_event_error(self):
+        result = fmt_event({"event": "error", "data": {"message": "boom"}})
+        assert "boom" in result
+
+
+class TestParseSeek:
+    def test_absolute_seconds(self):
+        assert parse_seek("30") == 30.0
+
+    def test_relative_forward(self):
+        assert parse_seek("+5") == "+5"
+
+    def test_relative_backward(self):
+        assert parse_seek("-10") == "-10"
+
+    def test_minutes_seconds(self):
+        assert parse_seek("1:30") == 90.0
+
+    def test_hours_minutes_seconds(self):
+        assert parse_seek("1:02:30") == 3750.0
+
+    def test_invalid_format(self):
+        with pytest.raises(Exception):
+            parse_seek("1:2:3:4")
 
 
 class TestCLICommands:
-    """Tests for CLI commands."""
-
     @pytest.fixture
     def runner(self):
-        """Create CLI runner."""
         return CliRunner()
 
-    @pytest.fixture
-    def mock_commands(self):
-        """Mock command functions."""
-        with patch("atk.cli.main.commands") as mock:
-            yield mock
+    def _ok(self, data=None):
+        return {"id": "1", "ok": True, "data": data or {}}
 
-    def test_play_command(self, runner, mock_commands):
-        """Test play command."""
-        mock_commands.cmd_play.return_value = Response.success(
-            "id", {"state": "playing"}
-        )
+    def _err(self, message="Unknown error"):
+        return {"id": "1", "ok": False, "error": {"message": message}}
 
-        result = runner.invoke(cli, ["play"])
-        assert result.exit_code == 0
-        mock_commands.cmd_play.assert_called_once_with(None)
+    def test_play(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"state": "playing"})):
+            result = runner.invoke(cli, ["play"])
+            assert result.exit_code == 0
 
-    def test_play_file_command(self, runner, mock_commands, tmp_path):
-        """Test play with file."""
-        mock_commands.cmd_play.return_value = Response.success(
-            "id", {"state": "playing"}
-        )
-
-        # Create test file
+    def test_play_file(self, runner, tmp_path):
         test_file = tmp_path / "test.mp3"
         test_file.touch()
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"state": "playing"})
+        ) as mock:
+            result = runner.invoke(cli, ["play", str(test_file)])
+            assert result.exit_code == 0
+            mock.assert_called_once()
+            args = mock.call_args[0]
+            assert args[0] == "play"
 
-        result = runner.invoke(cli, ["play", str(test_file)])
-        assert result.exit_code == 0
-        mock_commands.cmd_play.assert_called_once()
+    def test_pause(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"state": "paused"})):
+            result = runner.invoke(cli, ["pause"])
+            assert result.exit_code == 0
 
-    def test_pause_command(self, runner, mock_commands):
-        """Test pause command."""
-        mock_commands.cmd_pause.return_value = Response.success(
-            "id", {"state": "paused"}
-        )
+    def test_stop(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"state": "stopped"})):
+            result = runner.invoke(cli, ["stop"])
+            assert result.exit_code == 0
 
-        result = runner.invoke(cli, ["pause"])
-        assert result.exit_code == 0
-        mock_commands.cmd_pause.assert_called_once()
+    def test_next(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"queue_position": 1})
+        ):
+            result = runner.invoke(cli, ["next"])
+            assert result.exit_code == 0
 
-    def test_stop_command(self, runner, mock_commands):
-        """Test stop command."""
-        mock_commands.cmd_stop.return_value = Response.success(
-            "id", {"state": "stopped"}
-        )
+    def test_prev(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"queue_position": 0})
+        ):
+            result = runner.invoke(cli, ["prev"])
+            assert result.exit_code == 0
 
-        result = runner.invoke(cli, ["stop"])
-        assert result.exit_code == 0
-        mock_commands.cmd_stop.assert_called_once()
+    def test_seek(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"position": 30})
+        ) as mock:
+            result = runner.invoke(cli, ["seek", "30"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("seek", {"pos": 30.0})
 
-    def test_next_command(self, runner, mock_commands):
-        """Test next command."""
-        mock_commands.cmd_next.return_value = Response.success(
-            "id", {"queue_position": 1}
-        )
+    def test_seek_relative(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"position": 35})
+        ) as mock:
+            result = runner.invoke(cli, ["seek", "+5"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("seek", {"pos": "+5"})
 
-        result = runner.invoke(cli, ["next"])
-        assert result.exit_code == 0
-        mock_commands.cmd_next.assert_called_once()
+    def test_volume(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"volume": 50})
+        ) as mock:
+            result = runner.invoke(cli, ["volume", "50"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("volume", {"level": 50})
 
-    def test_prev_command(self, runner, mock_commands):
-        """Test prev command."""
-        mock_commands.cmd_prev.return_value = Response.success(
-            "id", {"queue_position": 0}
-        )
+    def test_add(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"queue_length": 1})):
+            result = runner.invoke(cli, ["add", "/path/to/file.mp3"])
+            assert result.exit_code == 0
 
-        result = runner.invoke(cli, ["prev"])
-        assert result.exit_code == 0
-        mock_commands.cmd_prev.assert_called_once()
+    def test_remove(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"removed": "track"})
+        ) as mock:
+            result = runner.invoke(cli, ["remove", "0"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("remove", {"index": 0})
 
-    def test_seek_command(self, runner, mock_commands):
-        """Test seek command."""
-        mock_commands.cmd_seek.return_value = Response.success("id", {"position": 30})
+    def test_clear(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"cleared": True})):
+            result = runner.invoke(cli, ["clear"])
+            assert result.exit_code == 0
 
-        result = runner.invoke(cli, ["seek", "30"])
-        assert result.exit_code == 0
-        mock_commands.cmd_seek.assert_called_once_with("30")
+    def test_queue(self, runner):
+        with patch(
+            "atk.cli.send_command",
+            return_value=self._ok({"tracks": [], "current_index": 0}),
+        ):
+            result = runner.invoke(cli, ["queue"])
+            assert result.exit_code == 0
 
-    def test_volume_command(self, runner, mock_commands):
-        """Test volume command."""
-        mock_commands.cmd_volume.return_value = Response.success("id", {"volume": 50})
+    def test_jump(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"queue_position": 2})
+        ) as mock:
+            result = runner.invoke(cli, ["jump", "2"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("jump", {"index": 2})
 
-        result = runner.invoke(cli, ["volume", "50"])
-        assert result.exit_code == 0
-        mock_commands.cmd_volume.assert_called_once_with(50)
-
-    def test_add_command(self, runner, mock_commands):
-        """Test add command."""
-        mock_commands.cmd_add.return_value = Response.success("id", {"queue_length": 1})
-
-        result = runner.invoke(cli, ["add", "/path/to/file.mp3"])
-        assert result.exit_code == 0
-        mock_commands.cmd_add.assert_called_once()
-
-    def test_remove_command(self, runner, mock_commands):
-        """Test remove command."""
-        mock_commands.cmd_remove.return_value = Response.success(
-            "id", {"removed": "track"}
-        )
-
-        result = runner.invoke(cli, ["remove", "0"])
-        assert result.exit_code == 0
-        mock_commands.cmd_remove.assert_called_once_with(0)
-
-    def test_clear_command(self, runner, mock_commands):
-        """Test clear command."""
-        mock_commands.cmd_clear.return_value = Response.success("id", {"cleared": True})
-
-        result = runner.invoke(cli, ["clear"])
-        assert result.exit_code == 0
-        mock_commands.cmd_clear.assert_called_once()
-
-    def test_queue_command(self, runner, mock_commands):
-        """Test queue command."""
-        mock_commands.cmd_queue.return_value = Response.success(
-            "id", {"tracks": [], "current_index": 0}
-        )
-
-        result = runner.invoke(cli, ["queue"])
-        assert result.exit_code == 0
-        mock_commands.cmd_queue.assert_called_once()
-
-    def test_jump_command(self, runner, mock_commands):
-        """Test jump command."""
-        mock_commands.cmd_jump.return_value = Response.success(
-            "id", {"queue_position": 2}
-        )
-
-        result = runner.invoke(cli, ["jump", "2"])
-        assert result.exit_code == 0
-        mock_commands.cmd_jump.assert_called_once_with(2)
-
-    def test_status_command(self, runner, mock_commands):
-        """Test status command."""
-        mock_commands.cmd_status.return_value = Response.success(
-            "id",
-            {
-                "state": "stopped",
-                "track": None,
-                "position": 0,
-                "duration": 0,
-                "volume": 80,
-                "shuffle": False,
-                "repeat": "none",
-                "queue_length": 0,
-                "queue_position": 0,
-            },
-        )
-
-        result = runner.invoke(cli, ["status"])
-        assert result.exit_code == 0
-        mock_commands.cmd_status.assert_called_once()
-
-    def test_shuffle_on_command(self, runner, mock_commands):
-        """Test shuffle on command."""
-        mock_commands.cmd_shuffle.return_value = Response.success(
-            "id", {"shuffle": True}
-        )
-
-        result = runner.invoke(cli, ["shuffle", "on"])
-        assert result.exit_code == 0
-        mock_commands.cmd_shuffle.assert_called_once_with(True)
-
-    def test_shuffle_off_command(self, runner, mock_commands):
-        """Test shuffle off command."""
-        mock_commands.cmd_shuffle.return_value = Response.success(
-            "id", {"shuffle": False}
-        )
-
-        result = runner.invoke(cli, ["shuffle", "off"])
-        assert result.exit_code == 0
-        mock_commands.cmd_shuffle.assert_called_once_with(False)
-
-    def test_repeat_command(self, runner, mock_commands):
-        """Test repeat command."""
-        mock_commands.cmd_repeat.return_value = Response.success(
-            "id", {"repeat": "queue"}
-        )
-
-        result = runner.invoke(cli, ["repeat", "queue"])
-        assert result.exit_code == 0
-        mock_commands.cmd_repeat.assert_called_once_with("queue")
-
-    def test_rate_command(self, runner, mock_commands):
-        """Test rate command."""
-        mock_commands.cmd_rate.return_value = Response.success("id", {"rate": 1.5})
-
-        result = runner.invoke(cli, ["rate", "1.5"])
-        assert result.exit_code == 0
-        mock_commands.cmd_rate.assert_called_once_with(1.5)
-
-    def test_save_command(self, runner, mock_commands):
-        """Test save command."""
-        mock_commands.cmd_save.return_value = Response.success(
-            "id", {"saved": "/path/to/playlist.json", "track_count": 5}
-        )
-
-        result = runner.invoke(cli, ["save", "myplaylist"])
-        assert result.exit_code == 0
-        mock_commands.cmd_save.assert_called_once_with("myplaylist", "json")
-
-    def test_load_command(self, runner, mock_commands):
-        """Test load command."""
-        mock_commands.cmd_load.return_value = Response.success(
-            "id", {"loaded": "/path/to/playlist.json", "track_count": 5}
-        )
-
-        result = runner.invoke(cli, ["load", "myplaylist"])
-        assert result.exit_code == 0
-        mock_commands.cmd_load.assert_called_once_with("myplaylist")
-
-    def test_playlists_command(self, runner, mock_commands):
-        """Test playlists command."""
-        mock_commands.cmd_playlists.return_value = Response.success(
-            "id", {"playlists": []}
-        )
-
-        result = runner.invoke(cli, ["playlists"])
-        assert result.exit_code == 0
-        mock_commands.cmd_playlists.assert_called_once()
-
-    def test_ping_command(self, runner, mock_commands):
-        """Test ping command."""
-        mock_commands.cmd_ping.return_value = Response.success("id", {"pong": True})
-
-        result = runner.invoke(cli, ["ping"])
-        assert result.exit_code == 0
-        mock_commands.cmd_ping.assert_called_once()
-
-    def test_json_output(self, runner, mock_commands):
-        """Test --json output option."""
-        mock_commands.cmd_status.return_value = Response.success(
-            "id",
-            {
-                "state": "stopped",
-                "track": None,
-                "position": 0,
-                "duration": 0,
-                "volume": 80,
-                "shuffle": False,
-                "repeat": "none",
-                "queue_length": 0,
-                "queue_position": 0,
-            },
-        )
-
-        result = runner.invoke(cli, ["--json", "status"])
-        assert result.exit_code == 0
-        # Should contain JSON output
-        import json
-
-        data = json.loads(result.output)
-        assert data["ok"] is True
-
-    def test_error_response(self, runner, mock_commands):
-        """Test error response handling."""
-        from atk.protocol.messages import ErrorCode, ErrorInfo
-
-        mock_commands.cmd_jump.return_value = Response.failure(
-            "id",
-            ErrorInfo(
-                code=ErrorCode.INVALID_INDEX,
-                category="queue",
-                message="Invalid queue index: 99",
+    def test_status(self, runner):
+        with patch(
+            "atk.cli.send_command",
+            return_value=self._ok(
+                {
+                    "state": "stopped",
+                    "track": None,
+                    "volume": 80,
+                    "shuffle": False,
+                    "repeat": "none",
+                    "queue_length": 0,
+                }
             ),
-        )
+        ):
+            result = runner.invoke(cli, ["status"])
+            assert result.exit_code == 0
 
-        result = runner.invoke(cli, ["jump", "99"])
-        assert result.exit_code == 1
-        assert "Error" in result.output
+    def test_shuffle_on(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"shuffle": True})
+        ) as mock:
+            result = runner.invoke(cli, ["shuffle", "on"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("shuffle", {"enabled": True})
 
-    def test_devices_command(self, runner, mock_commands):
-        """Test devices command."""
-        mock_commands.cmd_devices.return_value = Response.success(
-            "id",
-            {
-                "devices": [
-                    {"name": "Built-in Audio", "id": "0102", "is_default": True},
-                ]
-            },
-        )
+    def test_shuffle_off(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"shuffle": False})
+        ) as mock:
+            result = runner.invoke(cli, ["shuffle", "off"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("shuffle", {"enabled": False})
 
-        result = runner.invoke(cli, ["devices"])
-        assert result.exit_code == 0
-        mock_commands.cmd_devices.assert_called_once()
+    def test_shuffle_toggle(self, runner):
+        """Toggle shuffle when no argument given."""
+        with patch("atk.cli.send_command") as mock:
+            mock.side_effect = [
+                self._ok({"state": "playing", "shuffle": False}),  # status query
+                self._ok({"shuffle": True}),  # shuffle command
+            ]
+            result = runner.invoke(cli, ["shuffle"])
+            assert result.exit_code == 0
 
-    def test_set_device_command(self, runner, mock_commands):
-        """Test set-device command."""
-        mock_commands.cmd_set_device.return_value = Response.success(
-            "id", {"device_id": "0102"}
-        )
+    def test_repeat(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"repeat": "queue"})
+        ) as mock:
+            result = runner.invoke(cli, ["repeat", "queue"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("repeat", {"mode": "queue"})
 
-        result = runner.invoke(cli, ["set-device", "0102"])
-        assert result.exit_code == 0
-        mock_commands.cmd_set_device.assert_called_once_with("0102")
+    def test_repeat_cycle(self, runner):
+        """Cycle repeat mode when no argument given."""
+        with patch("atk.cli.send_command") as mock:
+            mock.side_effect = [
+                self._ok({"state": "playing", "repeat": "none"}),  # status query
+                self._ok({"repeat": "queue"}),  # repeat command
+            ]
+            result = runner.invoke(cli, ["repeat"])
+            assert result.exit_code == 0
 
-    def test_set_device_default(self, runner, mock_commands):
-        """Test set-device command with no argument resets to default."""
-        mock_commands.cmd_set_device.return_value = Response.success(
-            "id", {"device_id": None}
-        )
+    def test_rate(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"rate": 1.5})
+        ) as mock:
+            result = runner.invoke(cli, ["rate", "1.5"])
+            assert result.exit_code == 0
+            args = mock.call_args[0]
+            assert args[0] == "rate"
+            assert args[1]["speed"] == 1.5
 
-        result = runner.invoke(cli, ["set-device"])
-        assert result.exit_code == 0
-        mock_commands.cmd_set_device.assert_called_once_with(None)
+    def test_rate_tape(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"rate": 1.5})
+        ) as mock:
+            result = runner.invoke(cli, ["rate", "--tape", "1.5"])
+            assert result.exit_code == 0
+            assert mock.call_args[0][1]["mode"] == "tape"
+
+    def test_save(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"track_count": 5})
+        ) as mock:
+            result = runner.invoke(cli, ["save", "myplaylist"])
+            assert result.exit_code == 0
+            args = mock.call_args[0]
+            assert args[0] == "save"
+            assert args[1]["name"] == "myplaylist"
+
+    def test_load(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"track_count": 5})
+        ) as mock:
+            result = runner.invoke(cli, ["load", "myplaylist"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("load", {"name": "myplaylist"})
+
+    def test_playlists(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"playlists": []})):
+            result = runner.invoke(cli, ["playlists"])
+            assert result.exit_code == 0
+
+    def test_ping(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"pong": True})):
+            result = runner.invoke(cli, ["ping"])
+            assert result.exit_code == 0
+
+    def test_devices(self, runner):
+        with patch("atk.cli.send_command", return_value=self._ok({"devices": []})):
+            result = runner.invoke(cli, ["devices"])
+            assert result.exit_code == 0
+
+    def test_set_device(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"device_id": "0102"})
+        ) as mock:
+            result = runner.invoke(cli, ["set-device", "0102"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("set-device", {"device_id": "0102"})
+
+    def test_set_device_default(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._ok({"device_id": None})
+        ) as mock:
+            result = runner.invoke(cli, ["set-device"])
+            assert result.exit_code == 0
+            mock.assert_called_once_with("set-device", {"device_id": None})
+
+    def test_json_output(self, runner):
+        resp = self._ok({"state": "stopped", "track": None, "volume": 80})
+        with patch("atk.cli.send_command", return_value=resp):
+            result = runner.invoke(cli, ["--json", "status"])
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["ok"] is True
+
+    def test_error_response(self, runner):
+        with patch(
+            "atk.cli.send_command", return_value=self._err("Invalid queue index: 99")
+        ):
+            result = runner.invoke(cli, ["jump", "99"])
+            assert result.exit_code == 1
+            assert "Error" in result.output

@@ -2,39 +2,36 @@
 
 ## Project Overview
 
-ATK (Audio Toolkit) is a non-blocking audio playback daemon with named pipe IPC. Single daemon, KISS philosophy, Unix-style.
+ATK (Audio Toolkit) is a non-blocking audio playback daemon with named pipe IPC. Single daemon, KISS philosophy, Unix-style. Designed as a "dumb daemon + smart agent" — minimal core, intelligence lives in the LLM controller.
 
 ## Architecture
 
 ```
 src/atk/
-├── cli/               # Click-based CLI client
-│   ├── main.py        # Click command definitions (27 commands)
-│   ├── commands.py    # Command implementations (send_command → pipe)
-│   └── output.py     # Output formatters (status, queue, devices, playlists)
-├── daemon/            # Background daemon (single instance)
-│   ├── main.py        # Entry point, signal handling, PID file
-│   ├── daemon.py      # Command dispatcher (_handle_request)
-│   ├── session.py     # Playback session state (queue, shuffle, repeat)
-│   ├── player.py      # Miniaudio wrapper (decode, stream, rate control)
-│   └── pipe_handler.py # Named pipe IPC (asyncio + thread executor)
-├── protocol/          # JSON message protocol
-│   ├── messages.py    # Request/Response/Event dataclasses
-│   └── client.py      # Async client helpers
-├── tui/               # Textual TUI
-│   ├── app.py         # Main app with file picker
-│   └── widgets.py     # Progress bar, status widgets
-└── config.py          # XDG path configuration
+├── player.py      # Miniaudio wrapper, WSOLA time-stretch, tape rate (~250 lines)
+├── daemon.py      # Pipe handler + command dispatch + queue state (~500 lines)
+├── cli.py         # Click CLI, pipe client, output formatters (~370 lines)
+├── config.py      # XDG path helpers (~30 lines)
+├── __init__.py
+└── tui/           # Optional Textual TUI
+    ├── app.py     # Main app with file picker
+    └── widgets.py # Progress bar, status widgets
 ```
 
 ## Key Design Decisions
 
 1. **Single daemon** — one instance at `$XDG_RUNTIME_DIR/atk/`, no session multiplexing
 2. **Named pipes** — FIFOs (`atk.cmd`, `atk.resp`), simple blocking IPC
-3. **JSON protocol** — newline-delimited JSON, versioned (`v: 1`)
-4. **Rate-only audio** — tape-style rate control (affects pitch), no DSP/EQ
-5. **Miniaudio backend** — decode to float32 PCM, numpy for sample manipulation
-6. **Player state separation** — `_active` (generator running) vs `_playing` (producing audio)
+3. **Plain dict protocol** — newline-delimited JSON, no typed dataclasses
+4. **Two rate modes** — WSOLA time-stretch (default, preserves pitch) and tape-style (pitch changes with speed)
+5. **Miniaudio backend** — full-file decode to float32 PCM, numpy for sample manipulation
+6. **Flat structure** — 4 source files at package root, no sub-packages except TUI
+
+## Protocol
+
+Request: `{"id": "uuid", "cmd": "play", "args": {"file": "/path/to/audio.mp3"}}`
+Response: `{"id": "uuid", "ok": true, "data": {"state": "playing"}}`
+Event: `{"event": "track_changed", "data": {"track": {...}}}`
 
 ## Development
 
@@ -43,34 +40,32 @@ pip install -e ".[dev]"
 pytest tests/ -v
 pytest --cov=atk --cov-report=term-missing
 ruff check src/ tests/
-mypy src/atk/ --ignore-missing-imports
+ruff format src/ tests/
 ```
 
 ## Testing
 
 - Tests in `tests/` — pytest with asyncio mode
-- Mock the Player class for session tests
-- Test formatters independently in `test_cli.py`
-- Mock `send_command` for CLI command tests
+- `test_daemon.py` — tests Daemon class directly via `daemon._cmd_*()` methods
+- `test_cli.py` — tests formatters, parse_seek, and Click commands (mock `send_command`)
+- `conftest.py` — mock miniaudio, sample audio files, temp dirs
 
 ## Adding a New Command
 
-1. Add handler in `daemon/daemon.py` → `_handle_request()`
-2. Add `cmd_*()` function in `cli/commands.py`
-3. Add Click command in `cli/main.py`
-4. Add formatter in `cli/output.py` if needed
-5. Add tests in `tests/test_cli.py`
+1. Add `_cmd_foo(self, args: dict) -> dict` method in `daemon.py` `Daemon` class
+2. Register in `handlers` dict in `Daemon._dispatch()`
+3. Add Click command in `cli.py` that calls `send_command("foo", {...})`
+4. Add formatter in `cli.py` if needed (e.g. `fmt_foo()`)
+5. Add tests in both `test_daemon.py` and `test_cli.py`
 
 ## File Locations
 
 - Runtime: `$XDG_RUNTIME_DIR/atk/` — pipes, PID file
-- State: `$XDG_STATE_HOME/atk/` — session state
 - Data: `$XDG_DATA_HOME/atk/` — saved playlists
 
 ## Code Style
 
 - Type hints throughout, `from __future__ import annotations`
 - ruff for linting and formatting
-- mypy for type checking
 - Docstrings for public APIs only
 - Prefer composition over inheritance

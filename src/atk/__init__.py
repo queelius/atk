@@ -1,3 +1,3 @@
-"""ATK - Audio Toolkit: Non-blocking audio playback daemon."""
+"""ATK - Audio Toolkit."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
